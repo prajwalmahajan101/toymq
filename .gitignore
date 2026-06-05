@@ -1,0 +1,20 @@
+# Local-only planning notes (not for the repo)
+.plan/
+
+# Go build / test artifacts
+/bin/
+/dist/
+*.test
+*.out
+coverage.out
+*.prof
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Runtime data the broker writes
+/data/
