@@ -1,10 +1,12 @@
 package wal
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
+	"io"
 )
 
 const MaxRecordSize = 4 << 20 // 4 MiB
@@ -61,4 +63,82 @@ func Encode(rec Record, dst *bytes.Buffer) error {
 	dst.Write(scratch[:4])
 
 	return nil
+}
+
+func Decode(r *bufio.Reader) (Record, int, error) {
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+		if errors.Is(err, io.EOF) {
+			return Record{}, 0, io.EOF
+		}
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			return Record{}, 0, ErrShortRead
+		}
+		return Record{}, 0, err
+	}
+
+	length := binary.LittleEndian.Uint32(lenBuf[:])
+
+	if length > MaxRecordSize {
+		return Record{}, 0, ErrTooLarge
+	}
+
+	if length < 4 {
+		return Record{}, 0, ErrShortRead
+	}
+
+	body := make([]byte, length)
+	if _, err := io.ReadFull(r, body); err != nil {
+		return Record{}, 0, ErrShortRead
+	}
+
+	inner := body[:len(body)-4]
+	gotCRC := binary.LittleEndian.Uint32(body[len(body)-4:])
+	wantCRC := crc32.ChecksumIEEE(inner)
+
+	if gotCRC != wantCRC {
+		return Record{}, 0, ErrBadCRC
+	}
+
+	if len(inner) < 8+8+2+4 {
+		return Record{}, 0, ErrShortRead
+	}
+
+	var rec Record
+
+	off := 0
+
+	rec.MsgID = binary.LittleEndian.Uint64(inner[off:])
+	off += 8
+
+	rec.TsNs = binary.LittleEndian.Uint64(inner[off:])
+	off += 8
+
+	keyLen := int(binary.LittleEndian.Uint16(inner[off:]))
+	off += 2
+
+	if off+keyLen > len(inner) {
+		return Record{}, 0, ErrShortRead
+	}
+
+	rec.DedupeKey = string(inner[off : off+keyLen])
+
+	off += keyLen
+
+	if off+4 > len(inner) {
+		return Record{}, 0, ErrShortRead
+	}
+
+	payloadLen := int(binary.LittleEndian.Uint32(inner[off:]))
+	off += 4
+
+	if off+payloadLen != len(inner) {
+		return Record{}, 0, ErrShortRead
+	}
+
+	rec.Payload = append([]byte(nil), inner[off:off+payloadLen]...)
+
+	n := 4 + int(length)
+
+	return rec, n, nil
 }
