@@ -14,6 +14,7 @@ type Log struct {
 	mu        sync.Mutex
 	nextMsgID uint64
 	committed atomic.Uint64
+	cond      *sync.Cond
 }
 
 func Open(dir string) (*Log, error) {
@@ -32,6 +33,7 @@ func Open(dir string) (*Log, error) {
 		path: path,
 		f:    f,
 	}
+	l.cond = sync.NewCond(&l.mu)
 
 	if err := l.recover(); err != nil {
 		f.Close()
@@ -63,6 +65,7 @@ func (l *Log) Append(rec Record) (msgID uint64, byteOffset uint64, err error) {
 	newCommitted := l.committed.Load() + uint64(buf.Len())
 	l.committed.Store(newCommitted)
 
+	l.cond.Broadcast()
 	return rec.MsgID, newCommitted, nil
 }
 
