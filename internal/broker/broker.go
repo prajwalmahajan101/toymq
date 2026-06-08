@@ -12,9 +12,18 @@ import (
 	"github.com/prajwalmahajan101/toymq/internal/wal"
 )
 
+const (
+	defaultVisibilityTimeout = 30 * time.Second
+	defaultRedeliverInterval = 1 * time.Second
+	defaultPersistInterval   = 100 * time.Millisecond
+)
+
 type Broker struct {
 	dataDir   string
 	dedupeCap int
+
+	visibilityTimeout time.Duration
+	redeliverInterval time.Duration
 
 	mu     sync.RWMutex
 	topics map[string]*Topic
@@ -22,24 +31,39 @@ type Broker struct {
 	persistCtx    context.Context
 	persistCancel context.CancelFunc
 	persistDone   chan struct{}
+
+	redeliverCtx    context.Context
+	redeliverCancel context.CancelFunc
+	redeliverDone   chan struct{}
 }
 
 func New(dataDir string, dedupeCap int) (*Broker, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+	return newBroker(dataDir, dedupeCap, defaultVisibilityTimeout, defaultRedeliverInterval)
+}
+
+func newBroker(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration) (*Broker, error) {
+	persistCtx, persistCancel := context.WithCancel(context.Background())
+	redeliverCtx, redeliverCancel := context.WithCancel(context.Background())
 
 	b := &Broker{
-		dataDir:       dataDir,
-		dedupeCap:     dedupeCap,
-		topics:        make(map[string]*Topic),
-		persistCtx:    ctx,
-		persistCancel: cancel,
-		persistDone:   make(chan struct{}),
+		dataDir:           dataDir,
+		dedupeCap:         dedupeCap,
+		visibilityTimeout: visibility,
+		redeliverInterval: redeliverInterval,
+		topics:            make(map[string]*Topic),
+		persistCtx:        persistCtx,
+		persistCancel:     persistCancel,
+		persistDone:       make(chan struct{}),
+		redeliverCtx:      redeliverCtx,
+		redeliverCancel:   redeliverCancel,
+		redeliverDone:     make(chan struct{}),
 	}
 
 	topicsDir := filepath.Join(b.dataDir, "topics")
 	entries, err := os.ReadDir(topicsDir)
 	if err != nil && !os.IsNotExist(err) {
-		cancel()
+		persistCancel()
+		redeliverCancel()
 		return nil, fmt.Errorf("read topics dir: %w", err)
 	}
 
@@ -49,16 +73,19 @@ func New(dataDir string, dedupeCap int) (*Broker, error) {
 		}
 		t, err := b.getOrCreateTopic(e.Name())
 		if err != nil {
-			cancel()
+			persistCancel()
+			redeliverCancel()
 			return nil, err
 		}
 		if err := t.loadOffsets(b.dataDir); err != nil {
-			cancel()
+			persistCancel()
+			redeliverCancel()
 			return nil, fmt.Errorf("load offsets for %s: %w", e.Name(), err)
 		}
 	}
 
 	go b.runPersistLoop(100 * time.Millisecond)
+	go b.runRedeliverLoop(b.redeliverInterval)
 
 	return b, nil
 }
@@ -144,6 +171,9 @@ func (b *Broker) Publish(topic, key string, payload []byte) (uint64, bool, error
 }
 
 func (b *Broker) Close() error {
+	b.redeliverCancel()
+	<-b.redeliverDone
+
 	b.persistCancel()
 	<-b.persistDone
 
