@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -89,4 +90,30 @@ func (b *Broker) Close() error {
 		}
 	}
 	return firstErr
+}
+
+func (b *Broker) Subscribe(ctx context.Context, topic, consumerID string, sendCh chan<- *Inflight) (*Subscription, error) {
+	t, err := b.getOrCreateTopic(topic)
+	if err != nil {
+		return nil, err
+	}
+	return t.Subscribe(ctx, consumerID, sendCh)
+}
+
+func (b *Broker) Ack(topic, consumerID string, msgID uint64) error {
+	t, err := b.getOrCreateTopic(topic)
+	if err != nil {
+		return err
+	}
+	c := t.getOrCreateConsumer(consumerID)
+	return c.Ack(msgID)
+}
+
+func (b *Broker) Nack(topic, consumerID string, msgID uint64, sendCh chan<- *Inflight) error {
+	t, err := b.getOrCreateTopic(topic)
+	if err != nil {
+		return err
+	}
+	c := t.getOrCreateConsumer(consumerID)
+	return c.Nack(msgID, sendCh)
 }

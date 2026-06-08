@@ -19,8 +19,10 @@ type Topic struct {
 	log    *wal.Log
 	dedupe *DedupeIndex
 
-	pubMu     sync.Mutex
-	consumers map[string]*Consumer
+	pubMu sync.Mutex
+
+	consumersMu sync.RWMutex
+	consumers   map[string]*Consumer
 }
 
 func newTopic(name string, log *wal.Log, dedupeCap int) *Topic {
@@ -57,4 +59,94 @@ func (t *Topic) Publish(key string, payload []byte) (msgID uint64, duplicate boo
 	}
 
 	return id, false, nil
+}
+
+func (t *Topic) getOrCreateConsumer(id string) *Consumer {
+	t.consumersMu.RLock()
+	c, ok := t.consumers[id]
+	t.consumersMu.RUnlock()
+
+	if ok {
+		return c
+	}
+
+	t.consumersMu.Lock()
+	defer t.consumersMu.Unlock()
+	if c, ok := t.consumers[id]; ok {
+		return c
+	}
+	c = newConsumer(id, t)
+	t.consumers[id] = c
+	return c
+}
+
+func (t *Topic) runDelivery(ctx context.Context, c *Consumer, sub *Subscription, sendCh chan<- *Inflight) {
+	defer close(sub.done)
+
+	c.mu.Lock()
+	startID := c.lastAcked + 1
+
+	if c.lastAcked == 0 && len(c.inflight) == 0 && len(c.aboveLast) == 0 {
+		startID = 0 // fresh consumer- start from msg 0
+	}
+	c.mu.Unlock()
+
+	reader, err := t.log.NewReader(startID)
+	if err != nil {
+		return
+	}
+	defer reader.Close()
+
+	for {
+		rec, err := reader.Next(ctx)
+		if err != nil {
+			return
+		}
+
+		inf := &Inflight{
+			MsgID:       rec.MsgID,
+			Topic:       t.name,
+			Payload:     rec.Payload,
+			DeliveredAt: time.Now(),
+			Attempts:    1,
+		}
+
+		c.mu.Lock()
+		c.inflight[rec.MsgID] = inf
+		c.mu.Unlock()
+
+		select {
+		case sendCh <- inf:
+		case <-ctx.Done():
+			// rollback: if we never delivered, drop the inflight entry
+			c.mu.Lock()
+			delete(c.inflight, rec.MsgID)
+			c.mu.Unlock()
+			return
+		}
+	}
+}
+
+func (t *Topic) Subscribe(ctx context.Context, consumerID string, sendCh chan<- *Inflight) (*Subscription, error) {
+	c := t.getOrCreateConsumer(consumerID)
+
+	subCtx, cancel := context.WithCancel(ctx)
+
+	sub := &Subscription{
+		consumerID: consumerID,
+		cancel:     cancel,
+		done:       make(chan struct{}),
+	}
+
+	c.mu.Lock()
+	prev := c.sub
+	c.sub = sub
+	c.mu.Unlock()
+
+	if prev != nil {
+		prev.cancel()
+		<-prev.done
+	}
+	go t.runDelivery(subCtx, c, sub, sendCh)
+	return sub, nil
 }
