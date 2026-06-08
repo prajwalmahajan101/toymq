@@ -5,6 +5,9 @@
 | 0001 | [Framed record format for the WAL](./0001-framed-record-format.md) | Accepted |
 | 0002 | [Per-message fsync with atomic committed offset](./0002-per-message-fsync.md) | Accepted |
 | 0003 | [Crash recovery by full segment scan](./0003-recovery-by-scan.md) | Accepted |
+| 0004 | [Sealed Command interface for the wire protocol](./0004-proto-sealed-types.md) | Accepted |
+| 0005 | [Lazy topic registry with double-checked locking](./0005-broker-lazy-topic-registry.md) | Accepted |
+| 0006 | [Debounced atomic offset persistence](./0006-debounced-atomic-offsets.md) | Accepted |
 
 Each ADR is a short snapshot of *why* a decision was made, captured at the
 time the decision landed in code. They are not living docs — when a decision
