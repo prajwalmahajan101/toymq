@@ -10,6 +10,7 @@ import (
 
 type Subscription struct {
 	consumerID string
+	sendCh     chan<- *Inflight
 	cancel     context.CancelFunc
 	done       chan struct{}
 }
@@ -135,6 +136,7 @@ func (t *Topic) Subscribe(ctx context.Context, consumerID string, sendCh chan<- 
 
 	sub := &Subscription{
 		consumerID: consumerID,
+		sendCh:     sendCh,
 		cancel:     cancel,
 		done:       make(chan struct{}),
 	}
