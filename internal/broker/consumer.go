@@ -3,6 +3,7 @@ package broker
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,6 +24,8 @@ type Consumer struct {
 	aboveLast map[uint64]struct{}
 	inflight  map[uint64]*Inflight
 	sub       *Subscription
+
+	persistDirty atomic.Bool
 }
 
 func newConsumer(id string, topic *Topic) *Consumer {
@@ -55,6 +58,7 @@ func (c *Consumer) Ack(msgID uint64) error {
 	} else if msgID > c.lastAcked+1 {
 		c.aboveLast[msgID] = struct{}{}
 	}
+	c.persistDirty.Store(true)
 	return nil
 }
 
@@ -66,6 +70,7 @@ func (c *Consumer) Nack(msgID uint64, sendCh chan<- *Inflight) error {
 		return fmt.Errorf("nack: msg %d not in inflight for consumer %q", msgID, c.ID)
 	}
 	inf.Attempts++
+	c.persistDirty.Store(true)
 	inf.DeliveredAt = time.Now()
 	c.mu.Unlock()
 
@@ -74,6 +79,5 @@ func (c *Consumer) Nack(msgID uint64, sendCh chan<- *Inflight) error {
 	default:
 		// TODO: channel full - leave for redeliver ticker
 	}
-
 	return nil
 }
