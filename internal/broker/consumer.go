@@ -72,12 +72,13 @@ func (c *Consumer) Nack(msgID uint64, sendCh chan<- *Inflight) error {
 	inf.Attempts++
 	c.persistDirty.Store(true)
 	inf.DeliveredAt = time.Now()
+	snapshot := *inf
 	c.mu.Unlock()
 
 	select {
-	case sendCh <- inf:
+	case sendCh <- &snapshot:
 	default:
-		// TODO: channel full - leave for redeliver ticker
+		//  channel full - leave for redeliver ticker
 	}
 	return nil
 }

@@ -113,10 +113,11 @@ func (t *Topic) runDelivery(ctx context.Context, c *Consumer, sub *Subscription,
 
 		c.mu.Lock()
 		c.inflight[rec.MsgID] = inf
+		snapshot := *inf
 		c.mu.Unlock()
 
 		select {
-		case sendCh <- inf:
+		case sendCh <- &snapshot:
 		case <-ctx.Done():
 			// rollback: if we never delivered, drop the inflight entry
 			c.mu.Lock()
