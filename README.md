@@ -213,3 +213,76 @@ Schema:
 
 Numbers will be measured on a single host (specs documented inline)
 and committed alongside the `cmd/toymq-bench` binary.
+
+---
+
+## What surprised me
+
+Five things from building this that I didn't expect going in.
+
+**Fsync latency dominates everything.** Per-message `fsync(2)` runs
+~1–2 ms on a commodity SSD — orders of magnitude slower than any other
+operation in the broker. There's almost no point optimising elsewhere
+until you've decided whether to batch fsyncs. ADR 0002 picked
+per-message; the cost shows up as a hard per-connection publish ceiling
+that no Go-side cleverness can move.
+
+**The first SIGKILL surfaced a torn-tail bug.** Integration tests
+shut down cleanly. The chaos suite SIGKILLs. On the first chaos run,
+recovery parsed a partial trailing record, picked up garbage, and
+rejected the WAL. The fix — length-bounded read + CRC verification
+with truncation on either failure — is now ADR 0003. Clean-shutdown
+tests are not a substitute for chaos tests.
+
+**`-race` caught a redelivery-ticker race I'd "proven" safe.** The
+ticker scanned Inflight without holding `inflightMu`, on the wrong
+assumption that the map snapshot was stable mid-tick. `-race` fired
+within seconds; without it, the test ran clean for minutes. Three
+lines moved the lock above the scan. "Small loops look safe" — they
+don't.
+
+**The `hasAcked` flag is non-obvious until it isn't.** First draft
+used `lastAcked uint64` with the convention "0 means never acked."
+Then a consumer acked msg 0 — "never acked" and "acked msg 0" had the
+same on-disk representation, and resume silently replayed. ADR 0011
+introduces the explicit boolean. One byte of state turns an ambiguous
+representation into an unambiguous one.
+
+**A single FIFO collapsed `pkg/client`'s response routing.** First
+sketch was `map[verbID]chan response` keyed by a per-request token.
+The wire protocol's strict response ordering makes that map
+unnecessary — a slice with cancel-tombstones covers every case. The
+simpler version survived the chaos refactor without changes (ADR
+0013). Read the protocol contract before designing the data structure.
+
+---
+
+## Roadmap
+
+Out-of-scope for v1. Each is its own future milestone.
+
+- **`cmd/toymq-bench`** — throughput + latency harness with p50 /
+  p95 / p99 reporting. Fills the benchmark table above.
+- **`cmd/toymq-tui`** — interactive Bubble Tea client. First binary
+  with a third-party runtime dependency; needs an ADR before it
+  lands.
+- **Replication** — multi-node, raft or chain-replication. Would
+  require a network framing layer beyond the current line protocol.
+- **Batched fsync mode** — group commits with configurable interval
+  bound. Trades per-publish durability latency for throughput; the
+  benchmark mode is already scaffolded in the spec.
+- **Dedupe LRU persistence** — currently in-memory only; survives
+  one broker lifetime, not a SIGKILL. Persisting it would close the
+  one chaos-test limitation flagged in ADR 0013.
+- **Authentication / TLS** — neither exists. The line protocol would
+  need a HELLO frame; out of scope for a learning project but listed
+  here so it's not forgotten.
+- **Metrics / tracing / structured logging** — the broker emits
+  slog at boot but no per-request observability. Hooks would slot
+  cleanly into the Session handler.
+
+---
+
+## License
+
+MIT. See [`LICENSE`](./LICENSE).
