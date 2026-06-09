@@ -84,7 +84,7 @@ const tracerName = "github.com/prajwalmahajan101/toymq"
 
 type noopProvider struct{ tp trace.TracerProvider }
 
-func (n *noopProvider) Tracer() trace.Tracer            { return n.tp.Tracer(tracerName) }
+func (n *noopProvider) Tracer() trace.Tracer           { return n.tp.Tracer(tracerName) }
 func (n *noopProvider) Shutdown(context.Context) error { return nil }
 
 type sdkProvider struct{ tp *sdktrace.TracerProvider }
@@ -103,6 +103,6 @@ var (
 	AttrFromMsgID    = attribute.Key("from_msg_id")
 	AttrMsgID        = attribute.Key("msg_id")
 	AttrPayloadBytes = attribute.Key("payload_bytes")
-	AttrDuplicate   = attribute.Key("duplicate")
+	AttrDuplicate    = attribute.Key("duplicate")
 	AttrCount        = attribute.Key("count")
 )
