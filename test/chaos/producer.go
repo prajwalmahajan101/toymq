@@ -4,10 +4,13 @@ package chaos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"time"
+
+	"github.com/prajwalmahajan101/toymq/pkg/client"
 )
 
 const (
@@ -19,8 +22,7 @@ const (
 // producer drives a steady PUB stream with monotonically increasing
 // dedupe keys. On transport errors it reconnects and retries the
 // same key, so an interrupted PUB cannot be lost from the producer's
-// point of view (the broker's in-memory dedupe LRU may or may not
-// remember it across a SIGKILL — see ADR 0012).
+// point of view.
 type producer struct {
 	addr     string
 	topic    string
@@ -28,11 +30,11 @@ type producer struct {
 	payload  []byte
 	stderr   io.Writer
 
-	mu        sync.Mutex
-	okMsgIDs  []uint64
-	dupHits   int64
-	retries   int64
-	keysSent  int64
+	mu       sync.Mutex
+	okMsgIDs []uint64
+	dupHits  int64
+	retries  int64
+	keysSent int64
 }
 
 func newProducer(addr, topic string, interval time.Duration, payloadSize int, stderr io.Writer) *producer {
@@ -53,17 +55,15 @@ func bytesOfSize(n int) []byte {
 	return b
 }
 
-// run blocks until ctx is cancelled. The current key is retained
-// across reconnects until it gets a definitive response (OK / DUP).
 func (p *producer) run(ctx context.Context) {
 	var (
-		client  *chaosClient
+		c       *client.Client
 		backoff = producerInitialBackoff
 		nextKey int64 = 1
 	)
 	defer func() {
-		if client != nil {
-			client.close()
+		if c != nil {
+			_ = c.Close()
 		}
 	}()
 
@@ -74,9 +74,11 @@ func (p *producer) run(ctx context.Context) {
 				return false
 			default:
 			}
-			c, err := dial(p.addr, producerDialTimeout)
+			dialCtx, cancel := context.WithTimeout(ctx, producerDialTimeout)
+			nc, err := client.Dial(dialCtx, p.addr)
+			cancel()
 			if err == nil {
-				client = c
+				c = nc
 				backoff = producerInitialBackoff
 				return true
 			}
@@ -100,43 +102,28 @@ func (p *producer) run(ctx context.Context) {
 		default:
 		}
 
-		if client == nil && !connect() {
+		if c == nil && !connect() {
 			return
 		}
 
 		key := fmt.Sprintf("chaos-%d", nextKey)
-		if err := client.writePub(p.topic, key, p.payload); err != nil {
-			client.close()
-			client = nil
-			p.bumpRetries()
-			continue
-		}
-
-		f, err := client.readFrame()
+		id, dup, err := c.Pub(ctx, p.topic, key, p.payload)
 		if err != nil {
-			client.close()
-			client = nil
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
+			_ = c.Close()
+			c = nil
 			p.bumpRetries()
 			continue
 		}
 
-		switch f.kind {
-		case frameOK:
-			p.recordOK(f.okID)
-			nextKey++
-		case frameDup:
-			p.recordDup(f.dupID)
-			nextKey++
-		case frameErr:
-			fmt.Fprintf(p.stderr, "producer: ERR %s %s\n", f.errCode, f.errMsg)
-			// Advance to avoid an infinite retry on a bad key/topic.
-			// In practice the broker never ERRs on chaos PUBs.
-			nextKey++
-		default:
-			fmt.Fprintf(p.stderr, "producer: unexpected frame kind %d\n", f.kind)
-			client.close()
-			client = nil
+		if dup {
+			p.recordDup(id)
+		} else {
+			p.recordOK(id)
 		}
+		nextKey++
 
 		select {
 		case <-ctx.Done():
@@ -167,8 +154,6 @@ func (p *producer) bumpRetries() {
 	p.mu.Unlock()
 }
 
-// snapshot returns a copy of the producer's recorded state. Safe to
-// call after run has returned.
 func (p *producer) snapshot() producerStats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
