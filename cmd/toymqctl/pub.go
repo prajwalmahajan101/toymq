@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -44,9 +43,6 @@ func runPub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	id, dup, err := c.Pub(ctx, topic, *key, []byte(payload))
 	if err != nil {
 		fmt.Fprintf(stderr, "toymqctl pub: %v\n", err)
-		if errors.Is(err, client.ErrTransport) || errors.Is(err, client.ErrServer) {
-			return exitErr
-		}
 		return exitErr
 	}
 	if dup {

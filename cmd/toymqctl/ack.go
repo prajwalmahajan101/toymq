@@ -22,6 +22,9 @@ func runAck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: toymqctl ack [flags] <topic> <consumer-id> <msg-id>")
 		fs.PrintDefaults()
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "Note: messages with lower ids that arrive before")
+		fmt.Fprintln(stderr, "the target are left un-acked and will be redelivered.")
 	}
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
