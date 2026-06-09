@@ -38,10 +38,13 @@ type Broker struct {
 }
 
 func New(dataDir string, dedupeCap int) (*Broker, error) {
-	return newBroker(dataDir, dedupeCap, defaultVisibilityTimeout, defaultRedeliverInterval)
+	return NewWithTimings(dataDir, dedupeCap, defaultVisibilityTimeout, defaultRedeliverInterval)
 }
 
-func newBroker(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration) (*Broker, error) {
+// NewWithTimings constructs a Broker with explicit visibility and
+// redeliver-tick durations. Use this when integration tests need
+// faster redelivery than the 30 s production default.
+func NewWithTimings(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration) (*Broker, error) {
 	persistCtx, persistCancel := context.WithCancel(context.Background())
 	redeliverCtx, redeliverCancel := context.WithCancel(context.Background())
 

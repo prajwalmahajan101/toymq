@@ -8,9 +8,9 @@ import (
 func TestRedeliverAfterVisibilityTimeout(t *testing.T) {
 	dir := t.TempDir()
 
-	b, err := newBroker(dir, 16, 100*time.Millisecond, 20*time.Millisecond)
+	b, err := NewWithTimings(dir, 16, 100*time.Millisecond, 20*time.Millisecond)
 	if err != nil {
-		t.Fatalf("newBroker: %v", err)
+		t.Fatalf("NewWithTimings: %v", err)
 	}
 	defer b.Close()
 
