@@ -11,6 +11,7 @@
 | 0007 | [Visibility-timeout redelivery and Inflight snapshot rule](./0007-visibility-timeout-redelivery.md) | Accepted |
 | 0008 | [Per-connection Session: four-channel concurrency model](./0008-session-concurrency-model.md) | Accepted |
 | 0009 | [Binary entry point: testable `run`, stdlib `flag`, and a config package](./0009-cmd-wiring-and-config.md) | Accepted |
+| 0010 | [Integration test architecture](./0010-integration-test-architecture.md) | Accepted |
 
 Each ADR is a short snapshot of *why* a decision was made, captured at the
 time the decision landed in code. They are not living docs — when a decision
