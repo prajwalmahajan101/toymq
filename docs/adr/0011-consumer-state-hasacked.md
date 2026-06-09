@@ -79,6 +79,13 @@ Rejected alternatives:
 - Out-of-order acks no longer have to special-case the lastAcked=0
   state — they unconditionally go into `aboveLast` when not
   contiguous.
+- Note: this means `lastAcked` advances only over a contiguous
+  prefix of acknowledged ids. Acking a high id while earlier ids
+  remain un-acked leaves `lastAcked` at the gap — the un-acked
+  earlier ids will be redelivered on the next consumer takeover
+  (the visibility timeout puts them back into pending). This is
+  the property `toymqctl ack <high-id>` relies on, and the reason
+  it warns users about leftover un-acked ids.
 
 **Negative**
 - One extra field per consumer (1 byte in memory, one JSON key on
