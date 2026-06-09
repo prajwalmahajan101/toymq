@@ -16,11 +16,11 @@ type proxyListener struct {
 	ln       net.Listener
 	upstream string
 
-	mu      sync.Mutex
-	conns   []net.Conn
-	killed  bool
-	killCh  chan struct{}
-	doneCh  chan struct{}
+	mu     sync.Mutex
+	conns  []net.Conn
+	killed bool
+	killCh chan struct{}
+	doneCh chan struct{}
 }
 
 func startProxy(t *testing.T, upstream string) *proxyListener {

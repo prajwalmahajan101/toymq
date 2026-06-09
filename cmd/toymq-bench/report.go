@@ -9,11 +9,11 @@ import (
 
 // Stats is the aggregate report across every producer's measurements.
 type Stats struct {
-	Total      int
-	Errors     int
-	Elapsed    time.Duration
-	Throughput float64 // msgs / sec
-	MiBPerSec  float64 // payload throughput
+	Total                   int
+	Errors                  int
+	Elapsed                 time.Duration
+	Throughput              float64 // msgs / sec
+	MiBPerSec               float64 // payload throughput
 	Min, P50, P95, P99, Max time.Duration
 }
 
