@@ -1,5 +1,7 @@
 # ToyMQ
 
+[![CI](https://github.com/prajwalmahajan101/toymq/actions/workflows/ci.yml/badge.svg)](https://github.com/prajwalmahajan101/toymq/actions/workflows/ci.yml)
+
 A single-node persistent message broker written in Go as a learning
 project. Stdlib only, ~5k lines of code, 13 ADRs documenting every
 non-obvious decision. Not production software.
