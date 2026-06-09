@@ -96,6 +96,11 @@ func NewWithTimings(dataDir string, dedupeCap int, visibility, redeliverInterval
 	go b.runPersistLoop(100 * time.Millisecond)
 	go b.runRedeliverLoop(b.redeliverInterval)
 
+	slog.Info("broker opened",
+		"data-dir", b.dataDir,
+		"topics-recovered", len(b.topics),
+		"dedupe-cap", dedupeCap,
+	)
 	return b, nil
 }
 
@@ -168,6 +173,7 @@ func (b *Broker) getOrCreateTopic(name string) (*Topic, error) {
 
 	t = newTopic(name, log, b.dedupeCap)
 	b.topics[name] = t
+	slog.Info("topic created", "topic", name)
 	return t, nil
 }
 
@@ -201,6 +207,7 @@ func (b *Broker) Close() error {
 			firstErr = err
 		}
 	}
+	slog.Info("broker closed")
 	return firstErr
 }
 

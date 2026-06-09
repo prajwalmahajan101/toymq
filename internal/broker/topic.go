@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -164,6 +165,19 @@ func (t *Topic) Subscribe(ctx context.Context, consumerID string, sendCh chan<- 
 		prev.cancel()
 		<-prev.done
 	}
+
+	c.mu.Lock()
+	var startID uint64
+	if c.hasAcked {
+		startID = c.lastAcked + 1
+	}
+	c.mu.Unlock()
+	slog.Info("consumer subscribed",
+		"topic", t.name,
+		"consumer-id", consumerID,
+		"from-msg-id", startID,
+	)
+
 	go t.runDelivery(subCtx, c, sub, sendCh)
 	return sub, nil
 }

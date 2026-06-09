@@ -238,3 +238,34 @@ Reconnect (caller-owned) follows the pattern used in
 `test/chaos/producer.go` and `test/chaos/consumer.go`: catch
 `errors.Is(err, client.ErrTransport)` (or the closed channel from
 `Sub`), redial, resume.
+
+## Addendum (2026-06-09): `WithLogger` Option
+
+The "no metrics, no tracing, no logger" line under *Limitations of
+this design* originally meant the Client emitted nothing at all. As
+of v1.2, the Client gains an opt-in logger via
+`client.WithLogger(*slog.Logger)`.
+
+**What changed:**
+
+- A `logger *slog.Logger` field on the resolved `config`, set by
+  the new `WithLogger` Option.
+- A single `Client.log(level, msg, args...)` helper that no-ops when
+  the logger is nil — keeps the nil-check in one place.
+- State-change call sites: `Dial` → Debug "dialed", `Sub` → Debug
+  "subscribed", `Close` → Debug "closed", `readLoop` transport
+  failure → Warn "transport lost".
+
+**What did not change:**
+
+- **Silent by default.** A Client constructed without `WithLogger`
+  emits nothing. Existing callers (`internal/integration`,
+  `test/chaos`, `cmd/toymqctl`, `cmd/toymq-bench`, `cmd/toymq-tui`)
+  continue to see zero log output unless they opt in.
+- **No metrics or tracing.** Logger is the only hook added; metrics
+  and OTel remain explicitly out of scope for v1.
+
+The escape hatch matches what the original ADR called out as
+"additive but not in v1": a single new Option, no signature changes
+to `Dial`/`Pub`/`Sub`/`Ack`/`Nack`, and no behavioural change for
+callers who don't reach for it.

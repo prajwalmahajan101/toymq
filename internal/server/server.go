@@ -87,6 +87,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	s.listener = l
 	s.mu.Unlock()
 
+	slog.Info("listening", "addr", l.Addr().String())
+
 	// serveCtx is cancelled when the ctx cancels OR Serve exits.
 	// The watcher uses it to know when to give up watching
 	serveCtx, cancelServe := context.WithCancel(ctx)
@@ -143,6 +145,7 @@ func (s *Server) Serve(ctx context.Context) error {
 // drain, bounded by ctx. Returns ctx.Err() on deadline; nil on a
 // clean drain.
 func (s *Server) Shutdown(ctx context.Context) error {
+	slog.Info("shutdown started")
 	_ = s.closeListenerOnce()
 
 	done := make(chan struct{})
@@ -152,6 +155,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		slog.Info("shutdown drained")
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

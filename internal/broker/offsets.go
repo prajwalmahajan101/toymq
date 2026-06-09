@@ -3,6 +3,7 @@ package broker
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -79,6 +80,7 @@ func (t *Topic) flushOffsets(dataDir string) error {
 		os.Remove(tmp)
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}
+	slog.Debug("offsets flushed", "topic", t.name)
 	return nil
 }
 
