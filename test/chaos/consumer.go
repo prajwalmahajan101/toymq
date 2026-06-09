@@ -9,6 +9,8 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"github.com/prajwalmahajan101/toymq/pkg/client"
 )
 
 const (
@@ -26,10 +28,10 @@ type consumer struct {
 	consumerID string
 	stderr     io.Writer
 
-	mu      sync.Mutex
-	seen    map[uint64]int // MsgID -> delivery count
-	errors  int64
-	resubs  int64
+	mu     sync.Mutex
+	seen   map[uint64]int
+	errors int64
+	resubs int64
 }
 
 func newConsumer(addr, topic, consumerID string, stderr io.Writer) *consumer {
@@ -44,12 +46,13 @@ func newConsumer(addr, topic, consumerID string, stderr io.Writer) *consumer {
 
 func (c *consumer) run(ctx context.Context) {
 	var (
-		client  *chaosClient
+		cli     *client.Client
+		ch      <-chan client.Delivery
 		backoff = consumerInitialBackoff
 	)
 	defer func() {
-		if client != nil {
-			client.close()
+		if cli != nil {
+			_ = cli.Close()
 		}
 	}()
 
@@ -60,18 +63,19 @@ func (c *consumer) run(ctx context.Context) {
 				return false
 			default:
 			}
-			nc, err := dial(c.addr, consumerDialTimeout)
+			dialCtx, cancel := context.WithTimeout(ctx, consumerDialTimeout)
+			nc, err := client.Dial(dialCtx, c.addr)
+			cancel()
 			if err == nil {
-				if err := nc.writeSub(c.topic, c.consumerID); err == nil {
-					f, err := nc.readFrame()
-					if err == nil && f.kind == frameOK {
-						client = nc
-						backoff = consumerInitialBackoff
-						c.bumpResubs()
-						return true
-					}
+				dch, err := nc.Sub(ctx, c.topic, c.consumerID)
+				if err == nil {
+					cli = nc
+					ch = dch
+					backoff = consumerInitialBackoff
+					c.bumpResubs()
+					return true
 				}
-				nc.close()
+				_ = nc.Close()
 			}
 			c.bumpErrors()
 			select {
@@ -93,59 +97,35 @@ func (c *consumer) run(ctx context.Context) {
 		default:
 		}
 
-		if client == nil && !connectAndSub() {
+		if cli == nil && !connectAndSub() {
 			return
 		}
 
-		f, err := client.readFrame()
-		if err != nil {
-			// Timeout is expected during the gap between SIGKILL and
-			// the next message — just retry the read on the same conn
-			// if it's still alive; otherwise reconnect.
-			if isTimeout(err) {
-				continue
-			}
-			client.close()
-			client = nil
-			c.bumpErrors()
-			continue
-		}
-
-		switch f.kind {
-		case frameMsg:
-			c.recordDelivery(f.msgID)
-			if err := client.writeAck(c.consumerID, f.msgID); err != nil {
-				client.close()
-				client = nil
+		select {
+		case <-ctx.Done():
+			return
+		case d, ok := <-ch:
+			if !ok {
+				// Client closed (transport failure or our own close).
+				_ = cli.Close()
+				cli = nil
+				ch = nil
 				c.bumpErrors()
 				continue
 			}
-			// Drain the ACK's OK response.
-			ackResp, err := client.readFrame()
-			if err != nil || ackResp.kind != frameOK {
-				if err != nil && !isTimeout(err) {
-					client.close()
-					client = nil
-					c.bumpErrors()
+			c.recordDelivery(d.MsgID)
+			if err := d.Ack(ctx); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return
 				}
+				fmt.Fprintf(c.stderr, "consumer: ack: %v\n", err)
+				_ = cli.Close()
+				cli = nil
+				ch = nil
+				c.bumpErrors()
 			}
-		default:
-			// Anything other than MSG on a steady-state subscription
-			// means we're out of sync.
-			fmt.Fprintf(c.stderr, "consumer: unexpected frame kind %d\n", f.kind)
-			client.close()
-			client = nil
 		}
 	}
-}
-
-func isTimeout(err error) bool {
-	type timeout interface{ Timeout() bool }
-	var te timeout
-	if errors.As(err, &te) {
-		return te.Timeout()
-	}
-	return false
 }
 
 func (c *consumer) recordDelivery(id uint64) {
@@ -166,8 +146,6 @@ func (c *consumer) bumpResubs() {
 	c.mu.Unlock()
 }
 
-// snapshot returns a copy of the consumer's recorded state. Safe to
-// call after run has returned.
 func (c *consumer) snapshot() consumerStats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
