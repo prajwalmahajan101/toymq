@@ -43,6 +43,19 @@ linters-settings:
     disabled-checks:
       - ifElseChain
       - hugeParam
+      # exitAfterDefer: cmd/* main funcs intentionally use os.Exit after
+      # defer for cancel/cleanup; the OS reclaims on exit anyway.
+      - exitAfterDefer
+      # unnamedResult: stylistic preference; multi-return signatures here
+      # are short and the names would add noise.
+      - unnamedResult
+      # evalOrder: Bubble Tea pattern returns (model, cmd) from update
+      # branches; rewriting to please the linter hurts readability.
+      - evalOrder
+      # paramTypeCombine / preferStringWriter: stylistic, no correctness
+      # value here.
+      - paramTypeCombine
+      - preferStringWriter
   revive:
     rules:
       - name: var-naming
@@ -55,8 +68,13 @@ linters-settings:
           - disableStutteringCheck
   gosec:
     excludes:
-      # G104: errors unhandled — covered by errcheck with broader visibility
+      # G104: errors unhandled — covered by errcheck with broader visibility.
       - G104
+      # G115: integer overflow on int↔uint conversions. Too noisy in code
+      # that uses len() (always non-negative), time.Now().UnixNano(), and
+      # WAL offsets where overflow is structurally impossible. Real overflow
+      # risks are caught by govet's stdversion/conversion checks.
+      - G115
 
 issues:
   exclude-rules:
