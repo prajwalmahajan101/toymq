@@ -51,6 +51,7 @@ func (b *Broker) sweepRedelivery(now time.Time) {
 					"msg-id", task.inf.MsgID,
 					"attempts", task.inf.Attempts,
 				)
+				b.metrics.IncRedelivery(t.name, task.inf.Attempts)
 				select {
 				case task.sendCh <- task.inf:
 				default:

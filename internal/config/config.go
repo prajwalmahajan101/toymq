@@ -18,17 +18,30 @@ type Config struct {
 	LogFormat       string
 	ShutdownTimeout time.Duration
 	DedupeCap       int
+
+	// Observability (ADR 0015). Empty MetricsAddr disables the
+	// HTTP /metrics + /healthz endpoint. Empty OTLPEndpoint
+	// installs the noop tracer. Both default to off so existing
+	// deployments are unaffected.
+	MetricsAddr      string
+	OTLPEndpoint     string
+	TraceSampleRatio float64
+	ServiceVersion   string
 }
 
 // Default flag values exported so cmd binaries (toymqctl, toymq-bench,
 // toymq-tui) and tests share one source of truth.
 const (
-	DefaultAddr            = ":6789"
-	DefaultDataDir         = "./data"
-	DefaultLogLevel        = "info"
-	DefaultLogFormat       = "text"
-	DefaultShutdownTimeout = 5 * time.Second
-	DefaultDedupeCap       = 4096
+	DefaultAddr             = ":6789"
+	DefaultDataDir          = "./data"
+	DefaultLogLevel         = "info"
+	DefaultLogFormat        = "text"
+	DefaultShutdownTimeout  = 5 * time.Second
+	DefaultDedupeCap        = 4096
+	DefaultMetricsAddr      = ""
+	DefaultOTLPEndpoint     = ""
+	DefaultTraceSampleRatio = 0.05
+	DefaultServiceVersion   = "dev"
 )
 
 var (
@@ -50,6 +63,10 @@ func Parse(args []string, stderr io.Writer) (*Config, error) {
 	fs.StringVar(&cfg.LogFormat, "log-format", DefaultLogFormat, "text|json")
 	fs.DurationVar(&cfg.ShutdownTimeout, "shutdown-timeout", DefaultShutdownTimeout, "graceful drain budget")
 	fs.IntVar(&cfg.DedupeCap, "dedupe-cap", DefaultDedupeCap, "per-topic dedupe LRU size")
+	fs.StringVar(&cfg.MetricsAddr, "metrics-addr", DefaultMetricsAddr, "Prometheus /metrics listen address (empty disables)")
+	fs.StringVar(&cfg.OTLPEndpoint, "otlp-endpoint", DefaultOTLPEndpoint, "OTLP gRPC tracing endpoint (empty disables tracing)")
+	fs.Float64Var(&cfg.TraceSampleRatio, "trace-sample-ratio", DefaultTraceSampleRatio, "fraction of root spans to sample [0..1]")
+	fs.StringVar(&cfg.ServiceVersion, "service-version", DefaultServiceVersion, "value reported as otel.service.version")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -79,6 +96,9 @@ func (c *Config) validate() error {
 	}
 	if c.DedupeCap <= 0 {
 		return fmt.Errorf("dedupe-cap %d: must be > 0", c.DedupeCap)
+	}
+	if c.TraceSampleRatio < 0 || c.TraceSampleRatio > 1 {
+		return fmt.Errorf("trace-sample-ratio %v: must be in [0,1]", c.TraceSampleRatio)
 	}
 	return nil
 }
