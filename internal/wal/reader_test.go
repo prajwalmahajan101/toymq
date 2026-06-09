@@ -3,6 +3,8 @@ package wal
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -91,6 +93,29 @@ func TestReaderBlocksUntilAppend(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("Next did not return after Append")
+	}
+}
+
+func TestNewReaderMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// Append something so committed > 0; otherwise NewReader returns
+	// early without touching the file.
+	if _, _, err := l.Append(Record{Payload: []byte("x")}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Remove the file out from under the log. The next NewReader
+	// will fail at the os.Open(l.path) call.
+	if err := os.Remove(filepath.Join(dir, "000000.log")); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	if _, err := l.NewReader(0); err == nil {
+		t.Fatal("NewReader: expected error after file removed, got nil")
 	}
 }
 

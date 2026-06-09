@@ -94,6 +94,35 @@ func TestRecoveryTruncatesTornTail(t *testing.T) {
 	}
 }
 
+func TestOpenMkdirFails(t *testing.T) {
+	// Create a regular file, then try to Open a path that treats it
+	// as a parent directory. os.MkdirAll returns "not a directory".
+	parent := t.TempDir()
+	asFile := filepath.Join(parent, "blocker")
+	if err := os.WriteFile(asFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Open(filepath.Join(asFile, "topic")); err == nil {
+		t.Fatal("Open: expected error, got nil")
+	}
+}
+
+func TestAppendOnClosedLog(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, _, err := l.Append(Record{Payload: []byte("after-close")}); err == nil {
+		t.Fatal("Append on closed log: expected error, got nil")
+	}
+}
+
 func TestConcurrentAppend(t *testing.T) {
 	dir := t.TempDir()
 
