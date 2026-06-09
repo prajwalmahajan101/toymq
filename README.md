@@ -22,7 +22,6 @@ What it doesn't:
 - No replication, no multi-node, no cluster.
 - No authentication, no TLS, no authorization.
 - No dynamic topic management (topics auto-create on first publish).
-- No metrics, no tracing, no logger hooks.
 - No batched fsync (mode exists in plans but not implemented in v1).
 
 ---
@@ -444,27 +443,11 @@ simpler version survived the chaos refactor without changes (ADR
 
 ## Roadmap
 
-Out-of-scope for v1. Each is its own future milestone.
-
-- **`cmd/toymq-bench`** — throughput + latency harness with p50 /
-  p95 / p99 reporting. Fills the benchmark table above.
-- **`cmd/toymq-tui`** — interactive Bubble Tea client. First binary
-  with a third-party runtime dependency; needs an ADR before it
-  lands.
-- **Replication** — multi-node, raft or chain-replication. Would
-  require a network framing layer beyond the current line protocol.
-- **Batched fsync mode** — group commits with configurable interval
-  bound. Trades per-publish durability latency for throughput; the
-  benchmark mode is already scaffolded in the spec.
-- **Dedupe LRU persistence** — currently in-memory only; survives
-  one broker lifetime, not a SIGKILL. Persisting it would close the
-  one chaos-test limitation flagged in ADR 0013.
-- **Authentication / TLS** — neither exists. The line protocol would
-  need a HELLO frame; out of scope for a learning project but listed
-  here so it's not forgotten.
-- **Metrics / tracing / structured logging** — the broker emits
-  slog at boot but no per-request observability. Hooks would slot
-  cleanly into the Session handler.
+Open ideas — what could come next — live in [`IDEA.md`](./IDEA.md).
+The roadmap is intentionally not committed: this is a learning project,
+not a product, and the next thing to build is whatever feels most
+interesting. Shipped milestones live on the
+[Releases page](https://github.com/prajwalmahajan101/toymq/releases).
 
 ---
 
