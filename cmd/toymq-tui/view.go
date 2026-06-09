@@ -33,23 +33,39 @@ var (
 )
 
 // View renders the model. Never mutates state.
+//
+// Layout: header / scrollback / (modal?) / footer stacked vertically.
+// When a pub or sub modal is active it occupies its natural height
+// between the (shrunk) scrollback and the footer, so the log lines
+// above remain visible while the form is open.
 func (m model) View() string {
 	header := m.renderHeader()
 	footer := m.renderFooter()
-	body := m.renderScrollback(headerHeight(header), headerHeight(footer))
+	headerH := lipgloss.Height(header)
+	footerH := lipgloss.Height(footer)
 
-	stacked := lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
-
+	var modal string
 	switch m.state {
 	case statePubModal:
-		return overlayModal(stacked, m.renderPubModal(), m.width, m.height)
+		modal = m.renderPubModal()
 	case stateSubModal:
-		return overlayModal(stacked, m.renderSubModal(), m.width, m.height)
+		modal = m.renderSubModal()
 	}
-	return stacked
-}
 
-func headerHeight(s string) int { return lipgloss.Height(s) }
+	if modal == "" {
+		body := m.renderScrollback(headerH, footerH)
+		return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	}
+
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	modalH := lipgloss.Height(modal)
+	centered := lipgloss.PlaceHorizontal(w, lipgloss.Center, modal)
+	body := m.renderScrollback(headerH, footerH+modalH)
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, centered, footer)
+}
 
 func (m model) renderHeader() string {
 	sub := "no subscription"
@@ -149,21 +165,3 @@ func (m model) renderSubModal() string {
 	return modalStyle.Render(strings.Join(lines, "\n"))
 }
 
-// overlayModal centers the modal box in the terminal on top of the
-// stacked background. lipgloss.Place pads with spaces so the
-// background scrollback stays visible around the modal frame.
-func overlayModal(background, modal string, w, h int) string {
-	if w <= 0 {
-		w = 80
-	}
-	if h <= 0 {
-		h = 24
-	}
-	centered := lipgloss.Place(w, h,
-		lipgloss.Center, lipgloss.Center,
-		modal,
-		lipgloss.WithWhitespaceChars(" "),
-	)
-	_ = background
-	return centered
-}
