@@ -164,4 +164,3 @@ func (m model) renderSubModal() string {
 	}
 	return modalStyle.Render(strings.Join(lines, "\n"))
 }
-
