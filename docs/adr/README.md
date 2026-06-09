@@ -1,5 +1,15 @@
 # Architecture Decision Records
 
+> For the structural overview — system layers, command flow diagrams,
+> redelivery semantics, persistence model, and goroutine maps — see
+> [`../ARCHITECTURE.md`](../ARCHITECTURE.md),
+> [`../FLOWS.md`](../FLOWS.md),
+> [`../REDELIVERY.md`](../REDELIVERY.md),
+> [`../PERSISTENCE.md`](../PERSISTENCE.md), and
+> [`../CONCURRENCY.md`](../CONCURRENCY.md). ADRs cover *why*; those
+> docs cover *what*.
+
+
 | #    | Title                                                | Status   |
 | ---- | ---------------------------------------------------- | -------- |
 | 0001 | [Framed record format for the WAL](./0001-framed-record-format.md) | Accepted |
