@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"io"
 	"strings"
 	"testing"
@@ -121,6 +122,44 @@ func TestDecodeShortRead(t *testing.T) {
 	truncated := raw[:len(raw)-7] // chop last 7 bytes (partial CRC + tail)
 
 	_, _, err := Decode(bufio.NewReader(bytes.NewReader(truncated)))
+	if !errors.Is(err, ErrShortRead) {
+		t.Fatalf("got err=%v, want ErrShortRead", err)
+	}
+}
+
+func TestDecodePartialLength(t *testing.T) {
+	// 2 bytes of length header → io.ReadFull returns io.ErrUnexpectedEOF.
+	_, _, err := Decode(bufio.NewReader(bytes.NewReader([]byte{0x01, 0x02})))
+	if !errors.Is(err, ErrShortRead) {
+		t.Fatalf("got err=%v, want ErrShortRead", err)
+	}
+}
+
+func TestDecodeLengthBelowMinimum(t *testing.T) {
+	// length=3 (less than the 4-byte CRC tail) → ErrShortRead.
+	var hdr [4]byte
+	binary.LittleEndian.PutUint32(hdr[:], 3)
+	body := []byte{0, 0, 0}
+	_, _, err := Decode(bufio.NewReader(bytes.NewReader(append(hdr[:], body...))))
+	if !errors.Is(err, ErrShortRead) {
+		t.Fatalf("got err=%v, want ErrShortRead", err)
+	}
+}
+
+func TestDecodeInnerTooShort(t *testing.T) {
+	// length = MinInnerSize − 1 (=21). Hand-craft a body of 21 bytes
+	// whose CRC matches its first 17 bytes, so we pass the CRC check
+	// and hit the `len(inner) < 22` branch.
+	const length = 8 + 8 + 2 + 4 - 1 // 21
+	inner := make([]byte, length-4)  // 17 bytes
+	var hdr [4]byte
+	binary.LittleEndian.PutUint32(hdr[:], length)
+	body := make([]byte, length)
+	copy(body, inner)
+	// Compute the CRC over the 17 inner bytes and append.
+	binary.LittleEndian.PutUint32(body[length-4:], crc32.ChecksumIEEE(inner))
+
+	_, _, err := Decode(bufio.NewReader(bytes.NewReader(append(hdr[:], body...))))
 	if !errors.Is(err, ErrShortRead) {
 		t.Fatalf("got err=%v, want ErrShortRead", err)
 	}
