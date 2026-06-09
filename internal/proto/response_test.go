@@ -3,8 +3,24 @@ package proto
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"testing"
 )
+
+// failingWriter returns an error on the (failAfter+1)-th Write call.
+// Used to exercise error-propagation branches in the response writers.
+type failingWriter struct {
+	failAfter int
+	n         int
+}
+
+func (w *failingWriter) Write(p []byte) (int, error) {
+	if w.n >= w.failAfter {
+		return 0, errors.New("forced write error")
+	}
+	w.n++
+	return len(p), nil
+}
 
 func TestWriteResponses(t *testing.T) {
 	cases := []struct {
@@ -51,6 +67,76 @@ func TestWriteResponses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestWriteResponsesErrors exercises the error-return branches inside
+// each WriteXxx function. With a 1-byte bufio buffer, every
+// WriteString/WriteByte triggers an underlying Write, so a failingWriter
+// that fails at different offsets propagates the error out of different
+// statements inside each writer. Per-case offsets are sized to each
+// writer's total underlying-Write count so every subtest definitely
+// fails before the writer completes.
+func TestWriteResponsesErrors(t *testing.T) {
+	cases := []struct {
+		name     string
+		run      func(bw *bufio.Writer) error
+		failAfter []int
+	}{
+		{
+			name:      "OK",
+			run:       func(bw *bufio.Writer) error { return WriteOK(bw, 42) },
+			failAfter: []int{0, 1, 2, 3, 4, 5},
+		},
+		{
+			// With a 1-byte buffer, bw.Write(payload) sends the whole
+			// payload in a single underlying call (bufio short-circuits
+			// when its buffer is empty), so MSG only has ~15 underlying
+			// writes total even with a long payload.
+			name:      "MSG",
+			run:       func(bw *bufio.Writer) error { return WriteMsg(bw, "orders", 7, bytes.Repeat([]byte("a"), 64)) },
+			failAfter: []int{0, 1, 5, 10, 12, 14},
+		},
+		{
+			name:      "ERR",
+			run:       func(bw *bufio.Writer) error { return WriteErr(bw, "bad_code", "the reason") },
+			failAfter: []int{0, 1, 5, 10, 15, 17},
+		},
+		{
+			name:      "DUP",
+			run:       func(bw *bufio.Writer) error { return WriteDup(bw, 99) },
+			failAfter: []int{0, 1, 2, 3, 4, 5},
+		},
+	}
+
+	for _, tc := range cases {
+		for _, fa := range tc.failAfter {
+			tc, fa := tc, fa
+			t.Run(tc.name+"_failAfter"+itoa(fa), func(t *testing.T) {
+				fw := &failingWriter{failAfter: fa}
+				bw := bufio.NewWriterSize(fw, 1)
+				err := tc.run(bw)
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				}
+			})
+		}
+	}
+}
+
+// itoa is a tiny stand-in for strconv.Itoa to avoid an extra import
+// just for subtest names.
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var buf [12]byte
+	pos := len(buf)
+	for i > 0 {
+		pos--
+		buf[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	return string(buf[pos:])
 }
 
 func TestPubRoundTrip(t *testing.T) {
