@@ -150,6 +150,53 @@ Deeper material:
 
 ---
 
+## Architecture at a glance
+
+One process, five layers, ~5k lines of Go. Every TCP byte passes
+through:
+
+```
+Client → Listener → Session → Broker → Topic → WAL → Disk
+```
+
+Two background goroutine kinds run alongside the request path: a
+**redelivery ticker** per topic (returns expired Inflight entries to
+pending — see [`docs/REDELIVERY.md`](./docs/REDELIVERY.md)) and a
+**single offset-persist debouncer** per broker (writes `offsets.json`
+atomically every ≤100 ms). The full goroutine census, with a count
+formula in terms of conns / subs / topics, lives in
+[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md#3-runtime-goroutine-census).
+
+The structural docs in `docs/` cover the system *what*; the ADRs in
+`docs/adr/` cover the design *why*.
+
+---
+
+## Architecture Decision Records
+
+Thirteen ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
+why a non-obvious decision was made at the time it landed in code.
+ADRs are not living docs; if a decision is overturned, a new ADR
+supersedes the old one.
+
+| # | Title |
+|---|---|
+| [0001](./docs/adr/0001-framed-record-format.md) | Framed record format for the WAL |
+| [0002](./docs/adr/0002-per-message-fsync.md) | Per-message fsync with atomic committed offset |
+| [0003](./docs/adr/0003-recovery-by-scan.md) | Crash recovery by full segment scan |
+| [0004](./docs/adr/0004-proto-sealed-types.md) | Sealed Command interface for the wire protocol |
+| [0005](./docs/adr/0005-broker-lazy-topic-registry.md) | Lazy topic registry with double-checked locking |
+| [0006](./docs/adr/0006-debounced-atomic-offsets.md) | Debounced atomic offset persistence |
+| [0007](./docs/adr/0007-visibility-timeout-redelivery.md) | Visibility-timeout redelivery and Inflight snapshot rule |
+| [0008](./docs/adr/0008-session-concurrency-model.md) | Per-connection Session: four-channel concurrency model |
+| [0009](./docs/adr/0009-cmd-wiring-and-config.md) | Binary entry point: testable `run`, stdlib `flag`, and a config package |
+| [0010](./docs/adr/0010-integration-test-architecture.md) | Integration test architecture |
+| [0011](./docs/adr/0011-consumer-state-hasacked.md) | Consumer state: explicit `hasAcked` flag |
+| [0012](./docs/adr/0012-chaos-test-architecture.md) | Chaos test architecture |
+| [0013](./docs/adr/0013-pkg-client-architecture.md) | `pkg/client` architecture |
+
+---
+
 ## Benchmarks
 
 **TODO: filled in after Step 14c (`toymq-bench` harness).**
