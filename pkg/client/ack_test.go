@@ -75,3 +75,40 @@ func TestNack_Redelivers(t *testing.T) {
 		t.Fatal("no redelivery after NACK")
 	}
 }
+
+// TestClient_Ack_WithoutDelivery exercises the public Client.Ack
+// method: a consumer can ACK a known msg-id without first receiving
+// the corresponding MSG (e.g. operator scripts driven by an external
+// id source). Sub registers the consumer, Client.Ack advances
+// lastAcked, and a fresh subscriber sees no replay.
+func TestClient_Ack_WithoutDelivery(t *testing.T) {
+	addr := startBroker(t)
+
+	pub, _ := Dial(context.Background(), addr)
+	defer pub.Close()
+	id, _, err := pub.Pub(context.Background(), "orders", "", []byte("x"))
+	if err != nil {
+		t.Fatalf("Pub: %v", err)
+	}
+
+	sub, _ := Dial(context.Background(), addr)
+	if _, err := sub.Sub(context.Background(), "orders", "cg"); err != nil {
+		t.Fatalf("Sub: %v", err)
+	}
+	if err := sub.Ack(context.Background(), "cg", id); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+	_ = sub.Close()
+
+	resub, _ := Dial(context.Background(), addr)
+	defer resub.Close()
+	ch, err := resub.Sub(context.Background(), "orders", "cg")
+	if err != nil {
+		t.Fatalf("resub: %v", err)
+	}
+	select {
+	case d := <-ch:
+		t.Fatalf("got replay of acked msg %d", d.MsgID)
+	case <-time.After(300 * time.Millisecond):
+	}
+}

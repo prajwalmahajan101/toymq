@@ -81,16 +81,26 @@ func (c *Client) rollbackSub() {
 	c.subMu.Unlock()
 }
 
+// Ack sends ACK consumerID msgID and blocks for the broker's OK
+// response. Use when the caller already knows the consumer/msg-id
+// pair and does not need to receive the MSG first (e.g. one-shot
+// CLI tools or operator scripts). For the streaming case,
+// Delivery.Ack is more convenient.
+func (c *Client) Ack(ctx context.Context, consumerID string, msgID uint64) error {
+	return c.sendAckLike(ctx, "ACK", consumerID, msgID)
+}
+
+// Nack is the negative-acknowledge counterpart of Ack.
+func (c *Client) Nack(ctx context.Context, consumerID string, msgID uint64) error {
+	return c.sendAckLike(ctx, "NACK", consumerID, msgID)
+}
+
 func (c *Client) makeAck(consumerID string, msgID uint64) func(context.Context) error {
-	return func(ctx context.Context) error {
-		return c.sendAckLike(ctx, "ACK", consumerID, msgID)
-	}
+	return func(ctx context.Context) error { return c.Ack(ctx, consumerID, msgID) }
 }
 
 func (c *Client) makeNack(consumerID string, msgID uint64) func(context.Context) error {
-	return func(ctx context.Context) error {
-		return c.sendAckLike(ctx, "NACK", consumerID, msgID)
-	}
+	return func(ctx context.Context) error { return c.Nack(ctx, consumerID, msgID) }
 }
 
 func (c *Client) sendAckLike(ctx context.Context, verb, consumerID string, msgID uint64) error {
