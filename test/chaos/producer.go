@@ -58,7 +58,7 @@ func bytesOfSize(n int) []byte {
 func (p *producer) run(ctx context.Context) {
 	var (
 		c       *client.Client
-		backoff = producerInitialBackoff
+		backoff       = producerInitialBackoff
 		nextKey int64 = 1
 	)
 	defer func() {
