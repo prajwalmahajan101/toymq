@@ -13,6 +13,7 @@ type offsetsFile struct {
 }
 
 type consumerOffsets struct {
+	HasAcked  bool     `json:"has_acked"`
 	LastAcked uint64   `json:"last_acked"`
 	AboveLast []uint64 `json:"above_last"`
 }
@@ -28,6 +29,7 @@ func (t *Topic) snapshotOffsets() offsetsFile {
 	for id, c := range t.consumers {
 		c.mu.Lock()
 		snap := consumerOffsets{
+			HasAcked:  c.hasAcked,
 			LastAcked: c.lastAcked,
 			AboveLast: make([]uint64, 0, len(c.aboveLast)),
 		}
@@ -100,6 +102,7 @@ func (t *Topic) loadOffsets(dataDir string) error {
 	for id, off := range data.Consumers {
 		c := t.getOrCreateConsumer(id)
 		c.mu.Lock()
+		c.hasAcked = off.HasAcked
 		c.lastAcked = off.LastAcked
 		for _, mid := range off.AboveLast {
 			c.aboveLast[mid] = struct{}{}
