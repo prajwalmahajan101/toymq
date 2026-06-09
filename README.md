@@ -27,6 +27,24 @@ What it doesn't:
 
 ---
 
+## Install
+
+Pre-built binaries (linux/macOS × amd64/arm64) for each release
+live on the [Releases page](https://github.com/prajwalmahajan101/toymq/releases) —
+download the archive for your platform and verify against
+`SHA256SUMS`.
+
+From source:
+
+```bash
+go install github.com/prajwalmahajan101/toymq/cmd/toymq@latest
+go install github.com/prajwalmahajan101/toymq/cmd/toymqctl@latest
+go install github.com/prajwalmahajan101/toymq/cmd/toymq-tui@latest
+go install github.com/prajwalmahajan101/toymq/cmd/toymq-bench@latest
+```
+
+---
+
 ## 30-second quickstart
 
 Two terminals, one publish, one subscribe.
@@ -304,7 +322,7 @@ defaults to `0.05` (5% of root spans); set to `1.0` for debugging.
 
 ## Architecture Decision Records
 
-Sixteen ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
+Seventeen ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
 why a non-obvious decision was made at the time it landed in code.
 ADRs are not living docs; if a decision is overturned, a new ADR
 supersedes the old one.
@@ -327,6 +345,7 @@ supersedes the old one.
 | [0014](./docs/adr/0014-tui-framework-choice.md) | TUI framework choice: Bubble Tea |
 | [0015](./docs/adr/0015-observability-stack.md) | Observability stack: Prometheus + OpenTelemetry |
 | [0016](./docs/adr/0016-ci-lint-and-matrix.md) | CI lint + Go version matrix + local hook |
+| [0017](./docs/adr/0017-release-automation.md) | Release automation with GoReleaser |
 
 ---
 
