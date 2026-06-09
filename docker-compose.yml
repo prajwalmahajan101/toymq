@@ -1,0 +1,22 @@
+# Convenience compose file for local hacking. Production use is out of
+# scope; ToyMQ is single-node and has no replication or auth.
+#
+# Run:
+#   docker compose up -d
+#   toymqctl pub orders hello
+#   toymqctl sub orders c1
+#   docker compose down
+
+services:
+  toymq:
+    build: .
+    image: toymq:dev
+    container_name: toymq
+    ports:
+      - "6789:6789"
+    volumes:
+      - toymq-data:/data
+    restart: unless-stopped
+
+volumes:
+  toymq-data:
