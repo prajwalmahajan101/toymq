@@ -7,10 +7,15 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/config"
+	"github.com/prajwalmahajan101/toymq/pkg/client"
 )
+
+const dialTimeout = 5 * time.Second
 
 const (
 	exitOK    = 0
@@ -40,10 +45,47 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	// Chunks 2+3 replace this stub with the real bench loop.
-	fmt.Fprintf(stdout, "toymq-bench  addr=%s  topic=%s  producers=%d  msgs=%d  size=%d\n",
-		cfg.Addr, cfg.Topic, cfg.Producers, cfg.Msgs, cfg.Size)
-	_ = ctx
+	clients := make([]*client.Client, cfg.Producers)
+	for i := 0; i < cfg.Producers; i++ {
+		dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+		c, err := client.Dial(dialCtx, cfg.Addr)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(stderr, "toymq-bench: dial #%d: %v\n", i, err)
+			for j := 0; j < i; j++ {
+				_ = clients[j].Close()
+			}
+			return exitErr
+		}
+		clients[i] = c
+	}
+	defer func() {
+		for _, c := range clients {
+			_ = c.Close()
+		}
+	}()
+
+	per := distribute(cfg.Msgs, cfg.Producers)
+	payload := makePayload(cfg.Size)
+	results := make([]result, cfg.Producers)
+
+	var wg sync.WaitGroup
+	start := time.Now()
+	for i := 0; i < cfg.Producers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = runProducer(ctx, clients[i], cfg.Topic, per[i], payload)
+		}(i)
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	stats := aggregate(results, cfg.Size, elapsed)
+	writeReport(stdout, stats, cfg)
+	if stats.Errors > 0 {
+		return exitErr
+	}
 	return exitOK
 }
 
