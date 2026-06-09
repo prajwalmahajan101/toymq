@@ -42,14 +42,6 @@ func withRedeliverInterval(d time.Duration) harnessOpt {
 	return func(o *harnessOpts) { o.redeliverInterval = d }
 }
 
-func withDedupeCap(n int) harnessOpt {
-	return func(o *harnessOpts) { o.dedupeCap = n }
-}
-
-func withDataDir(dir string) harnessOpt {
-	return func(o *harnessOpts) { o.dataDir = dir }
-}
-
 type harness struct {
 	addr     string
 	dataDir  string

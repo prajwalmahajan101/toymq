@@ -33,9 +33,9 @@ func (l *Log) NewReader(fromMsgID uint64) (*Reader, error) {
 	}
 
 	for {
-		commited := l.committed.Load()
+		committed := l.committed.Load()
 
-		if r.pos >= commited {
+		if r.pos >= committed {
 			break
 		}
 

@@ -304,7 +304,7 @@ defaults to `0.05` (5% of root spans); set to `1.0` for debugging.
 
 ## Architecture Decision Records
 
-Fifteen ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
+Sixteen ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
 why a non-obvious decision was made at the time it landed in code.
 ADRs are not living docs; if a decision is overturned, a new ADR
 supersedes the old one.
@@ -326,6 +326,19 @@ supersedes the old one.
 | [0013](./docs/adr/0013-pkg-client-architecture.md) | `pkg/client` architecture |
 | [0014](./docs/adr/0014-tui-framework-choice.md) | TUI framework choice: Bubble Tea |
 | [0015](./docs/adr/0015-observability-stack.md) | Observability stack: Prometheus + OpenTelemetry |
+| [0016](./docs/adr/0016-ci-lint-and-matrix.md) | CI lint + Go version matrix + local hook |
+
+---
+
+## Contributing
+
+```bash
+make hooks   # opt in to the pre-commit hook (gofmt + go vet)
+make ci      # fmt-check + vet + lint + test -race
+```
+
+CI runs on Go 1.25.x and 1.26.x with `golangci-lint`; the chaos
+suite and Docker build run on every push.
 
 ---
 

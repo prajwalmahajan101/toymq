@@ -20,17 +20,17 @@ import (
 // reports. Construct via New; pass the pointer down to broker /
 // server / wal. A nil pointer turns every observation into a no-op.
 type Metrics struct {
-	PublishTotal       *prometheus.CounterVec
-	PublishDupTotal    *prometheus.CounterVec
-	PublishBytes       *prometheus.CounterVec
-	SubscribeTotal     *prometheus.CounterVec
-	InflightMessages   *prometheus.GaugeVec
-	RedeliveryTotal    *prometheus.CounterVec
-	WALAppendSeconds   *prometheus.HistogramVec
-	ActiveSessions     prometheus.Gauge
+	PublishTotal        *prometheus.CounterVec
+	PublishDupTotal     *prometheus.CounterVec
+	PublishBytes        *prometheus.CounterVec
+	SubscribeTotal      *prometheus.CounterVec
+	InflightMessages    *prometheus.GaugeVec
+	RedeliveryTotal     *prometheus.CounterVec
+	WALAppendSeconds    *prometheus.HistogramVec
+	ActiveSessions      prometheus.Gauge
 	ActiveSubscriptions prometheus.Gauge
-	TopicCount         prometheus.Gauge
-	OffsetsFlushTotal  *prometheus.CounterVec
+	TopicCount          prometheus.Gauge
+	OffsetsFlushTotal   *prometheus.CounterVec
 }
 
 // NewRegistry returns a fresh Prometheus registry pre-populated with

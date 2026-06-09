@@ -131,7 +131,7 @@ func (s *Server) Serve(ctx context.Context) error {
 				if backoff == 0 {
 					backoff = emfileBackoffMin
 				}
-				slog.Warn("accept: fd exhuastion, backing off", "delay", backoff)
+				slog.Warn("accept: fd exhaustion, backing off", "delay", backoff)
 				time.Sleep(backoff)
 				backoff *= 2
 				if backoff > emfileBackoffMax {

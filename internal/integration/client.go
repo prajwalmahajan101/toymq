@@ -208,20 +208,6 @@ func (c *testClient) expectDup(t *testing.T) uint64 {
 	return id
 }
 
-func (c *testClient) expectErr(t *testing.T) (code, reason string) {
-	t.Helper()
-	line := c.readResponseLine(t)
-	if !strings.HasPrefix(line, "ERR ") {
-		t.Fatalf("expected ERR, got %q", line)
-	}
-	rest := strings.TrimPrefix(line, "ERR ")
-	parts := strings.SplitN(rest, " ", 2)
-	if len(parts) != 2 {
-		t.Fatalf("malformed ERR %q", line)
-	}
-	return parts[0], parts[1]
-}
-
 // expectMsg returns the next MSG frame: drains pending first, then
 // reads from the network.
 func (c *testClient) expectMsg(t *testing.T) msgFrame {
