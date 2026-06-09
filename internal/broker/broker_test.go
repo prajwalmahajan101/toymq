@@ -169,6 +169,52 @@ func TestAckOutOfOrderDrains(t *testing.T) {
 	}
 }
 
+func TestNackRedeliversImmediately(t *testing.T) {
+	b := newTestBroker(t)
+	ctx := t.Context()
+
+	ch := make(chan *Inflight, 8)
+	if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	id := mustPublish(t, b, "orders", "", []byte("hi"))
+
+	first := recvInflight(t, ch, time.Second)
+	if first.MsgID != id {
+		t.Fatalf("first MsgID = %d, want %d", first.MsgID, id)
+	}
+	if first.Attempts != 1 {
+		t.Fatalf("first Attempts = %d, want 1", first.Attempts)
+	}
+
+	if err := b.Nack("orders", "c1", id, ch); err != nil {
+		t.Fatalf("Nack: %v", err)
+	}
+
+	second := recvInflight(t, ch, time.Second)
+	if second.MsgID != id {
+		t.Fatalf("second MsgID = %d, want %d", second.MsgID, id)
+	}
+	if second.Attempts != 2 {
+		t.Fatalf("second Attempts = %d, want 2", second.Attempts)
+	}
+}
+
+func TestNackUnknownMsg(t *testing.T) {
+	b := newTestBroker(t)
+	ctx := t.Context()
+
+	ch := make(chan *Inflight, 1)
+	if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	if err := b.Nack("orders", "c1", 999, ch); err == nil {
+		t.Fatal("Nack of unknown msg: expected error, got nil")
+	}
+}
+
 func TestPublishDedupeReturnsOriginalID(t *testing.T) {
 	b := newTestBroker(t)
 
