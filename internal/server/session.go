@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
+	"net"
 
 	"github.com/prajwalmahajan101/toymq/internal/broker"
 	"github.com/prajwalmahajan101/toymq/internal/proto"
@@ -55,6 +57,9 @@ func NewSession(conn io.ReadWriteCloser, b *broker.Broker) *Session {
 // waits, and closes the conn. Blocks until the connection closes
 // or ctx cancels.
 func (s *Session) Run(ctx context.Context) {
+	remote := remoteAddr(s.conn)
+	slog.Debug("session opened", "remote-addr", remote)
+
 	go s.runWriter()
 
 	s.runReader(ctx)
@@ -65,6 +70,18 @@ func (s *Session) Run(ctx context.Context) {
 	close(s.quit)
 	<-s.writerDone
 	_ = s.conn.Close()
+	slog.Debug("session closed", "remote-addr", remote)
+}
+
+// remoteAddr extracts the conn's remote address when it's a real
+// net.Conn; tests pass io.ReadWriteCloser wrappers (e.g. net.Pipe
+// halves) that don't expose one — fall back to "unknown" so logging
+// stays useful without panicking.
+func remoteAddr(conn io.ReadWriteCloser) string {
+	if c, ok := conn.(net.Conn); ok {
+		return c.RemoteAddr().String()
+	}
+	return "unknown"
 }
 
 func (s *Session) runReader(ctx context.Context) {

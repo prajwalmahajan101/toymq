@@ -1,6 +1,9 @@
 package broker
 
-import "time"
+import (
+	"log/slog"
+	"time"
+)
 
 type redeliverTask struct {
 	sendCh chan<- *Inflight
@@ -42,6 +45,12 @@ func (b *Broker) sweepRedelivery(now time.Time) {
 		for _, c := range consumers {
 			tasks := b.collectExpired(c, now)
 			for _, task := range tasks {
+				slog.Info("redelivering",
+					"topic", t.name,
+					"consumer-id", c.ID,
+					"msg-id", task.inf.MsgID,
+					"attempts", task.inf.Attempts,
+				)
 				select {
 				case task.sendCh <- task.inf:
 				default:

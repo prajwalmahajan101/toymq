@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 )
@@ -30,6 +31,21 @@ type Client struct {
 	subActive  bool
 	consumerID string
 	deliveryCh chan Delivery
+
+	// logger is nil by default; set via WithLogger. All log call
+	// sites go through Client.log so the nil-check stays in one
+	// place.
+	logger *slog.Logger
+}
+
+// log emits a record at level if a logger is configured; otherwise
+// it is a no-op. Keeps the silent-by-default contract from ADR 0013
+// in one place.
+func (c *Client) log(level slog.Level, msg string, args ...any) {
+	if c.logger == nil {
+		return
+	}
+	c.logger.Log(context.Background(), level, msg, args...)
 }
 
 // Dial opens a TCP connection to addr and returns a ready Client.
@@ -53,10 +69,12 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		w:       bufio.NewWriter(conn),
 		done:    make(chan struct{}),
 		pending: newPendingQueue(),
+		logger:  cfg.logger,
 	}
 
 	c.loopDone = make(chan struct{})
 	go c.readLoop()
+	c.log(slog.LevelDebug, "dialed", "addr", addr)
 	return c, nil
 }
 
@@ -79,6 +97,7 @@ func (c *Client) readLoop() {
 			c.writeMu.Lock()
 			if !c.isClosed() {
 				c.readErr = fmt.Errorf("%w: %w", ErrTransport, err)
+				c.log(slog.LevelWarn, "transport lost", "err", err)
 			}
 			c.writeMu.Unlock()
 			errFrame := frame{kind: frameErr, errCode: "TRANSPORT", errMsg: err.Error()}
@@ -126,6 +145,7 @@ func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.done)
 		_ = c.conn.Close()
+		c.log(slog.LevelDebug, "closed")
 	})
 	return nil
 }

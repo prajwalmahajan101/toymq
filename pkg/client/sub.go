@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 )
 
 // Sub subscribes consumerID to topic and returns a channel of
@@ -59,6 +60,7 @@ func (c *Client) Sub(ctx context.Context, topic, consumerID string) (<-chan Deli
 	case f := <-p.resp:
 		switch f.kind {
 		case frameOK:
+			c.log(slog.LevelDebug, "subscribed", "topic", topic, "consumer-id", consumerID)
 			return ch, nil
 		case frameErr:
 			c.rollbackSub()
