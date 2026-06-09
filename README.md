@@ -56,6 +56,32 @@ toymqctl sub orders consumer-1
 # (silent — both messages already acked, nothing replays)
 ```
 
+### Run via Docker
+
+If you'd rather not install a Go toolchain, the broker ships with a
+multi-stage Dockerfile that builds a static binary into a `FROM
+scratch` image (~10 MB, no shell, no libc).
+
+```bash
+docker build -t toymq:dev .
+docker run --rm -p 6789:6789 -v "$PWD/toymq-data:/data" toymq:dev
+```
+
+Or with compose:
+
+```bash
+docker compose up -d
+toymqctl pub orders hello
+toymqctl sub orders c1
+docker compose down
+```
+
+The container listens on `:6789` and persists its WAL under `/data`.
+Both are tunable via `--addr` and `--data-dir` overrides after the
+image name.
+
+### Redelivery demo
+
 To see redelivery in action, use `--no-auto-ack`:
 
 ```bash
