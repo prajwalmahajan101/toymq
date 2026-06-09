@@ -283,6 +283,8 @@ exit?"
 | Redelivery ticker | `Topic.start` | broker shutdown (ctx cancel) | `internal/broker/redelivery.go` |
 | Persist debouncer | `Broker.New` | broker shutdown (ctx cancel) + final flush | `internal/broker/offsets.go` |
 | `pkg/client.readLoop` | `client.Dial` | conn read error or `Close` | `pkg/client/client.go` |
+| TUI subscription pump | `readDeliveryCmd` (recursive `tea.Cmd`) | delivery channel closes → emits `transportLostMsg` | `cmd/toymq-tui/commands.go` |
+| TUI request workers | each `pubCmd` / `subCmd` / `ackCmd` / `nackCmd` | blocking `pkg/client` call returns | `cmd/toymq-tui/commands.go` |
 
 Every goroutine kind has a well-defined exit point. The chaos suite
 verifies that no leak survives a 30 s soak with three SIGKILL restarts

@@ -18,7 +18,7 @@ responsibility.
 
 ```mermaid
 flowchart TD
-    Client["TCP client<br/>(toymqctl, pkg/client, chaos suite)"]
+    Client["TCP client<br/>(toymqctl, toymq-tui, toymq-bench, pkg/client, chaos suite)"]
     Transport["Transport — internal/server/server.go<br/>accept loop, listener lifecycle"]
     Session["Session — internal/server/session.go<br/>per-conn reader/writer/handler"]
     Broker["Broker — internal/broker/broker.go<br/>topic registry, RPC entry points"]
@@ -52,6 +52,8 @@ flowchart LR
     subgraph CMD["cmd/"]
         toymq["toymq<br/>(broker binary)"]
         toymqctl["toymqctl<br/>(CLI client)"]
+        toymqbench["toymq-bench<br/>(load generator)"]
+        toymqtui["toymq-tui<br/>(Bubble Tea TUI)"]
     end
 
     subgraph PKG["pkg/"]
@@ -71,12 +73,22 @@ flowchart LR
     toymq --> server
     toymqctl --> client
     toymqctl --> config
+    toymqbench --> client
+    toymqbench --> config
+    toymqtui --> client
+    toymqtui --> config
     client --> proto
     server --> proto
     server --> broker
     broker --> wal
     proto -.->|"shared verb/<br/>response names"| client
 ```
+
+`cmd/toymq-tui` is the only binary that pulls a third-party runtime
+dependency (the Charm stack — `bubbletea`, `lipgloss`, `bubbles`).
+Per [ADR 0014](./adr/0014-tui-framework-choice.md), those imports
+stay confined to `cmd/toymq-tui/`; every other arrow in the graph
+above resolves through stdlib only.
 
 The dotted line from `proto` to `client` is conceptual: `pkg/client` does
 not import `internal/proto` (Go rules forbid `pkg → internal`), but it
