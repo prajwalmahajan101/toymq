@@ -2,6 +2,8 @@ package broker
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -201,6 +203,55 @@ func TestNackRedeliversImmediately(t *testing.T) {
 	}
 }
 
+func TestSubscribeCtxCancelRollsBackInflight(t *testing.T) {
+	b := newTestBroker(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Unbuffered channel + no reader → runDelivery blocks at sendCh <- inf.
+	ch := make(chan *Inflight)
+	if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	mustPublish(t, b, "orders", "", []byte("blocked"))
+
+	// Wait until runDelivery has marked the message inflight, then
+	// cancel — the ctx.Done branch must roll the entry back out.
+	deadline := time.Now().Add(time.Second)
+	for {
+		topic, _ := b.getOrCreateTopic("orders")
+		c := topic.getOrCreateConsumer("c1")
+		c.mu.Lock()
+		inflightCount := len(c.inflight)
+		c.mu.Unlock()
+		if inflightCount > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("runDelivery never marked inflight")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+
+	deadline = time.Now().Add(time.Second)
+	for {
+		topic, _ := b.getOrCreateTopic("orders")
+		c := topic.getOrCreateConsumer("c1")
+		c.mu.Lock()
+		inflightCount := len(c.inflight)
+		c.mu.Unlock()
+		if inflightCount == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("inflight not rolled back after ctx cancel: %d entries", inflightCount)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestNackUnknownMsg(t *testing.T) {
 	b := newTestBroker(t)
 	ctx := t.Context()
@@ -212,6 +263,65 @@ func TestNackUnknownMsg(t *testing.T) {
 
 	if err := b.Nack("orders", "c1", 999, ch); err == nil {
 		t.Fatal("Nack of unknown msg: expected error, got nil")
+	}
+}
+
+func TestNewBrokerLoadOffsetsFails(t *testing.T) {
+	dir := t.TempDir()
+	// Pre-create a topic dir with a corrupt offsets.json. broker.New's
+	// startup loop opens the WAL then calls loadOffsets — the latter
+	// must propagate the decode error.
+	topicDir := filepath.Join(dir, "topics", "orders")
+	if err := os.MkdirAll(topicDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(topicDir, "offsets.json"), []byte("not json"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := New(dir, testDedupeCap); err == nil {
+		t.Fatal("New: expected error from corrupt offsets, got nil")
+	}
+}
+
+func TestNewBrokerTopicsDirFails(t *testing.T) {
+	dir := t.TempDir()
+	// Make "topics" a regular file so ReadDir fails.
+	if err := os.WriteFile(filepath.Join(dir, "topics"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := New(dir, testDedupeCap); err == nil {
+		t.Fatal("New: expected error from non-dir topics path, got nil")
+	}
+}
+
+func TestPublishOnBlockedTopicFails(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "topics"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Pre-create a file at topics/blocked so wal.Open's MkdirAll
+	// fails when the broker tries to open that topic on first publish.
+	if err := os.WriteFile(filepath.Join(dir, "topics", "blocked"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	b, err := New(dir, testDedupeCap)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { b.Close() })
+
+	if _, _, err := b.Publish("blocked", "", []byte("nope")); err == nil {
+		t.Fatal("Publish to blocked topic: expected error, got nil")
+	}
+	if err := b.Ack("blocked", "c1", 0); err == nil {
+		t.Fatal("Ack on blocked topic: expected error, got nil")
+	}
+	if err := b.Nack("blocked", "c1", 0, make(chan *Inflight, 1)); err == nil {
+		t.Fatal("Nack on blocked topic: expected error, got nil")
+	}
+	if _, err := b.Subscribe(context.Background(), "blocked", "c1", make(chan *Inflight, 1)); err == nil {
+		t.Fatal("Subscribe on blocked topic: expected error, got nil")
 	}
 }
 
