@@ -3,8 +3,9 @@
 [![CI](https://github.com/prajwalmahajan101/toymq/actions/workflows/ci.yml/badge.svg)](https://github.com/prajwalmahajan101/toymq/actions/workflows/ci.yml)
 
 A single-node persistent message broker written in Go as a learning
-project. Stdlib only, ~5k lines of code, 13 ADRs documenting every
-non-obvious decision. Not production software.
+project. Stdlib only outside the optional TUI client, ~5k lines of
+code, 14 ADRs documenting every non-obvious decision. Not production
+software.
 
 What it does:
 
@@ -57,6 +58,25 @@ Auto-ACK is on by default; kill terminal B and resume:
 toymqctl sub orders consumer-1
 # (silent — both messages already acked, nothing replays)
 ```
+
+### Interactive TUI
+
+For a single-terminal demo client, `cmd/toymq-tui` ships an
+interactive Bubble Tea UI on top of `pkg/client`:
+
+```bash
+go install ./cmd/toymq-tui
+toymq-tui --addr 127.0.0.1:6789
+```
+
+Keys: `p` pub modal, `s` sub modal, `a` toggle auto-ack, `n` nack the
+last MSG, `q` quit. Auto-ack is on by default. Transport loss surfaces
+as a "disconnected" banner — reconnect is caller-owned per
+[ADR 0013](./docs/adr/0013-pkg-client-architecture.md), so relaunch
+the binary after the broker comes back. See
+[ADR 0014](./docs/adr/0014-tui-framework-choice.md) for the framework
+rationale; the Charm dependencies are confined to `cmd/toymq-tui/` and
+do not leak into the broker, client library, or other binaries.
 
 ### Run via Docker
 
@@ -202,7 +222,7 @@ The structural docs in `docs/` cover the system *what*; the ADRs in
 
 ## Architecture Decision Records
 
-Thirteen ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
+Fourteen ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
 why a non-obvious decision was made at the time it landed in code.
 ADRs are not living docs; if a decision is overturned, a new ADR
 supersedes the old one.
@@ -222,6 +242,7 @@ supersedes the old one.
 | [0011](./docs/adr/0011-consumer-state-hasacked.md) | Consumer state: explicit `hasAcked` flag |
 | [0012](./docs/adr/0012-chaos-test-architecture.md) | Chaos test architecture |
 | [0013](./docs/adr/0013-pkg-client-architecture.md) | `pkg/client` architecture |
+| [0014](./docs/adr/0014-tui-framework-choice.md) | TUI framework choice: Bubble Tea |
 
 ---
 
