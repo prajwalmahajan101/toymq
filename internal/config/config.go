@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// Config is the validated flag bundle passed from the broker binary
+// into broker.New / server.New. Construct via Parse so validation
+// runs; never zero-value it. See ADR 0009.
 type Config struct {
 	Addr            string
 	DataDir         string
@@ -17,6 +20,8 @@ type Config struct {
 	DedupeCap       int
 }
 
+// Default flag values exported so cmd binaries (toymqctl, toymq-bench,
+// toymq-tui) and tests share one source of truth.
 const (
 	DefaultAddr            = ":6789"
 	DefaultDataDir         = "./data"

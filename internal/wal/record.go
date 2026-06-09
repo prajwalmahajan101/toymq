@@ -9,14 +9,23 @@ import (
 	"io"
 )
 
+// MaxRecordSize caps one wire record at 4 MiB including framing and
+// CRC. Decode rejects anything larger up front to avoid a hostile
+// length-field allocating gigabytes.
 const MaxRecordSize = 4 << 20 // 4 MiB
 
+// Sentinel errors returned by Decode. Distinct types so callers
+// (chiefly the recovery loop) can branch on torn-tail vs corruption
+// vs adversarial input.
 var (
 	ErrShortRead = errors.New("wal: short read")
 	ErrBadCRC    = errors.New("wal: crc mismatch")
 	ErrTooLarge  = errors.New("wal: record too large")
 )
 
+// Record is one durable message: a monotonic MsgID, a producer
+// timestamp, an optional dedupe key, and an opaque payload. The wire
+// format is documented in ADR 0001.
 type Record struct {
 	MsgID     uint64
 	TsNs      uint64
@@ -24,6 +33,9 @@ type Record struct {
 	Payload   []byte
 }
 
+// Encode writes one framed Record to dst. Returns ErrTooLarge if the
+// resulting frame would exceed MaxRecordSize or the dedupe key
+// overflows the uint16 length prefix.
 func Encode(rec Record, dst *bytes.Buffer) error {
 	if len(rec.DedupeKey) > 65535 {
 		return ErrTooLarge
@@ -65,6 +77,10 @@ func Encode(rec Record, dst *bytes.Buffer) error {
 	return nil
 }
 
+// Decode reads one framed Record from r and returns the Record, the
+// total number of bytes consumed, and any error. A clean io.EOF means
+// the stream ended on a frame boundary; ErrShortRead means a torn
+// trailing write; ErrBadCRC means corruption.
 func Decode(r *bufio.Reader) (Record, int, error) {
 	var lenBuf [4]byte
 	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {

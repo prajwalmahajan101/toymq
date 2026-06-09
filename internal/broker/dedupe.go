@@ -2,17 +2,23 @@ package broker
 
 import "container/list"
 
+// DedupeEntry is one (dedupe key, MsgID) pair stored in DedupeIndex.
+// Exported so list.Element values type-assert cleanly.
 type DedupeEntry struct {
 	Key   string
 	MsgID uint64
 }
 
+// DedupeIndex is a bounded LRU mapping producer dedupe keys to the
+// MsgID of the original publish. Not goroutine-safe; the owning Topic
+// serializes access via pubMu.
 type DedupeIndex struct {
 	cap   int
 	order *list.List
 	byKey map[string]*list.Element
 }
 
+// NewDedupeIndex returns an empty DedupeIndex bounded at cap entries.
 func NewDedupeIndex(cap int) *DedupeIndex {
 	return &DedupeIndex{
 		cap:   cap,
@@ -21,6 +27,8 @@ func NewDedupeIndex(cap int) *DedupeIndex {
 	}
 }
 
+// Lookup returns the previously-stored MsgID for key and bumps the
+// entry to most-recently-used. Returns (0, false) on miss.
 func (d *DedupeIndex) Lookup(key string) (uint64, bool) {
 	elem, ok := d.byKey[key]
 	if !ok {
@@ -30,6 +38,8 @@ func (d *DedupeIndex) Lookup(key string) (uint64, bool) {
 	return elem.Value.(DedupeEntry).MsgID, true
 }
 
+// Insert stores key→msgID, bumping the entry to MRU on overwrite and
+// evicting the LRU entry when over capacity.
 func (d *DedupeIndex) Insert(key string, msgID uint64) {
 	if elem, ok := d.byKey[key]; ok {
 		elem.Value = DedupeEntry{Key: key, MsgID: msgID}
@@ -50,6 +60,7 @@ func (d *DedupeIndex) Insert(key string, msgID uint64) {
 	}
 }
 
+// Len returns the current entry count.
 func (d *DedupeIndex) Len() int {
 	return d.order.Len()
 }
