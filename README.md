@@ -3,9 +3,10 @@
 [![CI](https://github.com/prajwalmahajan101/toymq/actions/workflows/ci.yml/badge.svg)](https://github.com/prajwalmahajan101/toymq/actions/workflows/ci.yml)
 
 A single-node persistent message broker written in Go as a learning
-project. Stdlib only outside the optional TUI client, ~5k lines of
-code, 14 ADRs documenting every non-obvious decision. Not production
-software.
+project. Stdlib only inside `pkg/client` and the helper CLIs; the
+broker binary opts into Prometheus metrics and OpenTelemetry tracing,
+and the TUI uses Bubble Tea. ~5k lines of code, 15 ADRs documenting
+every non-obvious decision. Not production software.
 
 What it does:
 
@@ -220,9 +221,90 @@ The structural docs in `docs/` cover the system *what*; the ADRs in
 
 ---
 
+## Observability
+
+[ADR 0015](./docs/adr/0015-observability-stack.md) records the
+choice. Metrics use Prometheus `client_golang`; tracing uses the
+OpenTelemetry SDK with the OTLP gRPC exporter. **Both are off by
+default** — an empty `--metrics-addr` skips the HTTP listener and
+an empty `--otlp-endpoint` installs the noop tracer, so the v1.3
+broker behaves exactly like v1.2 unless you opt in.
+
+### One-command local stack
+
+```bash
+docker compose up -d
+open http://localhost:3000   # Grafana (anonymous Viewer, admin/admin to edit)
+open http://localhost:9090   # Prometheus
+toymqctl pub orders hello
+```
+
+The compose stack launches three services on a shared
+`toymq-obs` network: the broker (`:6789` wire, `:6790` metrics),
+Prometheus (scrapes `toymq:6790` every 15s), and Grafana with the
+pre-provisioned "ToyMQ" dashboard. Run `docker compose down -v`
+when you're done (the `-v` also wipes the broker data volume).
+
+### Local binary, metrics only
+
+```bash
+toymq --metrics-addr :6790
+curl localhost:6790/metrics | grep '^toymq_'
+curl localhost:6790/healthz
+```
+
+Eleven `toymq_*` series (plus the standard `go_*` / `process_*`
+collectors registered automatically):
+
+| Series | Type | Labels |
+|---|---|---|
+| `toymq_publish_total` | counter | topic |
+| `toymq_publish_dup_total` | counter | topic |
+| `toymq_publish_bytes_total` | counter | topic |
+| `toymq_subscribe_total` | counter | topic |
+| `toymq_inflight_messages` | gauge | topic, consumer |
+| `toymq_redelivery_total` | counter | topic, attempts_bucket |
+| `toymq_wal_append_seconds` | histogram | topic |
+| `toymq_active_sessions` | gauge | — |
+| `toymq_active_subscriptions` | gauge | — |
+| `toymq_topic_count` | gauge | — |
+| `toymq_offsets_flush_total` | counter | topic, result |
+
+### Tracing (OTLP)
+
+```bash
+docker run --rm -d --name jaeger -p 4317:4317 -p 16686:16686 \
+  jaegertracing/all-in-one:1.62
+
+toymq --metrics-addr :6790 \
+      --otlp-endpoint http://localhost:4317 \
+      --trace-sample-ratio 0.1
+
+# open http://localhost:16686 - look for service "toymq",
+# spans "broker.publish", "broker.subscribe".
+```
+
+Spans are added at `broker.Publish`, `broker.Subscribe`, the
+`wal.Log.Append` hot path, and the redelivery sweep. Sample ratio
+defaults to `0.05` (5% of root spans); set to `1.0` for debugging.
+
+### Limitations
+
+- **No cross-process trace propagation.** The wire protocol does
+  not carry a W3C `traceparent` line yet, so broker spans are
+  always root spans. A future protocol revision can close the
+  loop with `pkg/client`.
+- **`pkg/client` stays silent.** Per ADR 0013, the client library
+  has no metrics or spans. Consumers wrap `Pub` / `Sub` at their
+  layer for client-side observability.
+- **No alerting rules.** The dashboard ships; alert rules are a
+  follow-up once SLOs are defined.
+
+---
+
 ## Architecture Decision Records
 
-Fourteen ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
+Fifteen ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
 why a non-obvious decision was made at the time it landed in code.
 ADRs are not living docs; if a decision is overturned, a new ADR
 supersedes the old one.
@@ -243,6 +325,7 @@ supersedes the old one.
 | [0012](./docs/adr/0012-chaos-test-architecture.md) | Chaos test architecture |
 | [0013](./docs/adr/0013-pkg-client-architecture.md) | `pkg/client` architecture |
 | [0014](./docs/adr/0014-tui-framework-choice.md) | TUI framework choice: Bubble Tea |
+| [0015](./docs/adr/0015-observability-stack.md) | Observability stack: Prometheus + OpenTelemetry |
 
 ---
 
