@@ -1,0 +1,70 @@
+# golangci-lint configuration for toymq.
+#
+# Policy:
+#   - Security findings (gosec) are BLOCKING — fix or //nolint:gosec with reason.
+#   - Correctness findings (govet, errcheck, staticcheck, ineffassign, unused) are BLOCKING.
+#   - Style findings (revive, gocritic, misspell, gofmt) are advisory but enforced
+#     in CI to keep diffs clean.
+#
+# See docs/adr/0016-ci-lint-and-matrix.md for rationale.
+
+run:
+  timeout: 5m
+  tests: true
+  build-tags:
+    - chaos
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gocritic
+    - gofmt
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+    - unused
+
+linters-settings:
+  gofmt:
+    simplify: true
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
+    disabled-checks:
+      - ifElseChain
+      - hugeParam
+  revive:
+    rules:
+      - name: var-naming
+      - name: package-comments
+      - name: indent-error-flow
+      - name: error-return
+      - name: error-naming
+      - name: exported
+        arguments:
+          - disableStutteringCheck
+  gosec:
+    excludes:
+      # G104: errors unhandled — covered by errcheck with broader visibility
+      - G104
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
+        - revive
+    - path: test/chaos/
+      linters:
+        - gosec
+        - errcheck
+        - gocritic
+  max-issues-per-linter: 0
+  max-same-issues: 0
