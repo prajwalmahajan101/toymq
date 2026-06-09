@@ -225,20 +225,41 @@ supersedes the old one.
 
 ## Benchmarks
 
-**TODO: filled in after Step 14c (`toymq-bench` harness).**
+Measured by [`cmd/toymq-bench`](./cmd/toymq-bench) on commodity
+hardware. Per-message fsync is the only mode currently implemented;
+the batched-fsync columns will land with the post-v1 work listed in
+the roadmap.
 
-The benchmark table will compare per-message fsync vs batched fsync
-(when implemented) across throughput and p50 / p95 / p99 latency.
-Schema:
+**Host:** Intel Core i7-1355U, NVMe SSD (Samsung SM2P41C8-512GC6),
+Linux 7.0, Go 1.26.3. Data dir on the NVMe root partition (not
+tmpfs).
 
-| Mode | Throughput (msg/s) | p50 (µs) | p95 (µs) | p99 (µs) |
-|---|---|---|---|---|
-| per-msg fsync | — | — | — | — |
-| interval fsync (10 ms) | — | — | — | — |
-| interval fsync (100 ms) | — | — | — | — |
+**Workload:** 256-byte payloads, fresh dedupe key per message (zero
+dedupe hits — fast-path PUB only).
 
-Numbers will be measured on a single host (specs documented inline)
-and committed alongside the `cmd/toymq-bench` binary.
+| Producers | Msgs | Throughput | p50 | p95 | p99 |
+|---|---|---|---|---|---|
+| 4 | 500   | 1596 msg/s | 2.3 ms | 2.9 ms | 8.5 ms |
+| 4 | 2000  | 1466 msg/s | 2.6 ms | 3.6 ms | 4.6 ms |
+| 8 | 2000  |  407 msg/s | 6.1 ms | 55.4 ms | 77.3 ms |
+
+The 4-producer rows sit near the per-message fsync ceiling — adding
+more producers (the 8-producer row) increases contention on the
+topic's `pubMu` and **lowers** total throughput while inflating tail
+latency. Per-message fsync is a serial bottleneck by design; ADR 0002
+covers the tradeoff. A batched-fsync mode would lift this ceiling at
+the cost of a window of un-flushed messages.
+
+Reproduce locally:
+
+```bash
+toymq --data-dir /var/lib/toymq &
+toymq-bench --addr :6789 --producers 4 --msgs 2000 --size 256
+```
+
+Tmpfs (`/tmp` on most Linux distros) makes fsync nearly free —
+benchmarks against `/tmp` will show 50–100× the throughput in the
+table above. Use a real disk path if you want the durability story.
 
 ---
 
