@@ -1,0 +1,37 @@
+# Speed up `docker build` by keeping the build context lean.
+# Mirror .gitignore where it makes sense, plus a few extras
+# specifically for container builds.
+
+.git/
+.github/
+.gitignore
+
+# Local planning notes — never needed in an image.
+.plan/
+
+# Developer blog drafts — ADRs ship, blog doesn't.
+docs/blog/
+
+# Runtime data — must not bake into the image.
+data/
+
+# Go build / test artifacts.
+bin/
+dist/
+*.test
+*.out
+coverage.out
+*.prof
+
+# Editor / OS noise.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Docker artifacts themselves.
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
