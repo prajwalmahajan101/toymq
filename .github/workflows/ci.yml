@@ -52,6 +52,11 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          # Build from source with the runner's Go 1.26 toolchain so the
+          # type-checker understands the project's 1.26 syntax. The default
+          # 'binary' install mode ships a binary built with Go 1.24, which
+          # cannot parse 1.26 packages.
+          install-mode: goinstall
           args: --timeout=5m --out-format=colored-line-number --print-issued-lines
 
   chaos-smoke:
