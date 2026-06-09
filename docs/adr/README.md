@@ -14,6 +14,7 @@
 | 0010 | [Integration test architecture](./0010-integration-test-architecture.md) | Accepted |
 | 0011 | [Consumer state: explicit hasAcked flag](./0011-consumer-state-hasacked.md) | Accepted |
 | 0012 | [Chaos test architecture](./0012-chaos-test-architecture.md) | Accepted |
+| 0013 | [`pkg/client` architecture](./0013-pkg-client-architecture.md) | Accepted |
 
 Each ADR is a short snapshot of *why* a decision was made, captured at the
 time the decision landed in code. They are not living docs — when a decision
