@@ -8,14 +8,18 @@ on:
 
 jobs:
   test:
-    name: Build, vet, test
+    name: Build, vet, test (Go ${{ matrix.go-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ['1.25.x', '1.26.x']
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go-version }}
           cache: true
 
       - name: gofmt
@@ -32,6 +36,23 @@ jobs:
 
       - name: go test -race
         run: go test -race -timeout 5m ./...
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
 
   chaos-smoke:
     name: Chaos smoke (CHAOS_DURATION=30s)
