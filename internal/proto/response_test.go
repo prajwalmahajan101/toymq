@@ -78,8 +78,8 @@ func TestWriteResponses(t *testing.T) {
 // fails before the writer completes.
 func TestWriteResponsesErrors(t *testing.T) {
 	cases := []struct {
-		name     string
-		run      func(bw *bufio.Writer) error
+		name      string
+		run       func(bw *bufio.Writer) error
 		failAfter []int
 	}{
 		{
