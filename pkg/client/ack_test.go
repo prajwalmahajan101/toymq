@@ -75,3 +75,52 @@ func TestNack_Redelivers(t *testing.T) {
 		t.Fatal("no redelivery after NACK")
 	}
 }
+
+// TestClient_Ack_PublicMethod exercises Client.Ack as a top-level
+// method (no Delivery closure). The broker requires the target msg
+// to be inflight before it accepts an ACK, so the test drains the
+// delivery channel until the target arrives and then calls
+// Client.Ack rather than Delivery.Ack — proving the public method
+// works as the wire-level affordance it advertises.
+func TestClient_Ack_PublicMethod(t *testing.T) {
+	addr := startBroker(t)
+
+	pub, _ := Dial(context.Background(), addr)
+	defer pub.Close()
+	id, _, err := pub.Pub(context.Background(), "orders", "", []byte("x"))
+	if err != nil {
+		t.Fatalf("Pub: %v", err)
+	}
+
+	sub, _ := Dial(context.Background(), addr)
+	ch, err := sub.Sub(context.Background(), "orders", "cg")
+	if err != nil {
+		t.Fatalf("Sub: %v", err)
+	}
+
+	select {
+	case d := <-ch:
+		if d.MsgID != id {
+			t.Fatalf("got msg %d, want %d", d.MsgID, id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no delivery within 2s")
+	}
+
+	if err := sub.Ack(context.Background(), "cg", id); err != nil {
+		t.Fatalf("Client.Ack: %v", err)
+	}
+	_ = sub.Close()
+
+	resub, _ := Dial(context.Background(), addr)
+	defer resub.Close()
+	ch2, err := resub.Sub(context.Background(), "orders", "cg")
+	if err != nil {
+		t.Fatalf("resub: %v", err)
+	}
+	select {
+	case d := <-ch2:
+		t.Fatalf("got replay of acked msg %d", d.MsgID)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
