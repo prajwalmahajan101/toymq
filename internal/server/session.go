@@ -16,6 +16,9 @@ const (
 	sendChBuf         = 64
 )
 
+// Session is the per-connection state machine: one reader goroutine
+// parsing commands, one writer goroutine serializing OK/MSG/DUP/ERR
+// frames, and the two channels they share. See ADR 0008.
 type Session struct {
 	conn       io.ReadWriteCloser
 	broker     *broker.Broker
@@ -33,6 +36,8 @@ type Session struct {
 	currentCancel context.CancelFunc
 }
 
+// NewSession builds an idle Session ready for Run. The underlying
+// conn is closed by Run on exit.
 func NewSession(conn io.ReadWriteCloser, b *broker.Broker) *Session {
 	return &Session{
 		conn:       conn,
@@ -45,6 +50,10 @@ func NewSession(conn io.ReadWriteCloser, b *broker.Broker) *Session {
 	}
 }
 
+// Run starts the writer goroutine, runs the reader inline, then
+// tears down the subscription (if any), signals the writer to exit,
+// waits, and closes the conn. Blocks until the connection closes
+// or ctx cancels.
 func (s *Session) Run(ctx context.Context) {
 	go s.runWriter()
 
