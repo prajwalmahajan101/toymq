@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// Inflight is one message currently delivered to a consumer but not
+// yet acked. The owning Consumer keeps the canonical record; every
+// channel send is a value-copy snapshot per ADR 0007.
 type Inflight struct {
 	MsgID       uint64
 	Topic       string
@@ -15,6 +18,9 @@ type Inflight struct {
 	Attempts    int
 }
 
+// Consumer holds the per-consumer ack state for one Topic. See
+// ADR 0011 for why hasAcked is a separate flag rather than overloading
+// lastAcked == 0.
 type Consumer struct {
 	ID    string
 	topic *Topic
@@ -42,6 +48,9 @@ func newConsumer(id string, topic *Topic) *Consumer {
 	}
 }
 
+// Ack removes msgID from the inflight set and advances lastAcked /
+// drains aboveLast as far as contiguous acks allow. Returns an error
+// if msgID is not currently inflight.
 func (c *Consumer) Ack(msgID uint64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -68,6 +77,10 @@ func (c *Consumer) Ack(msgID uint64) error {
 	return nil
 }
 
+// Nack bumps Attempts and pushes a snapshot back onto sendCh for
+// immediate redelivery. A full channel is not retried inline — the
+// redelivery ticker covers that path. Returns an error if msgID is
+// not currently inflight.
 func (c *Consumer) Nack(msgID uint64, sendCh chan<- *Inflight) error {
 	c.mu.Lock()
 	inf, ok := c.inflight[msgID]
