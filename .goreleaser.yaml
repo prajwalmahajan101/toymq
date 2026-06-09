@@ -1,0 +1,129 @@
+# GoReleaser config for toymq.
+# Docs: https://goreleaser.com — schema version 2.
+#
+# Outputs per tag:
+#   - 4 binaries (toymq, toymqctl, toymq-bench, toymq-tui)
+#   - 4 archives per (goos, goarch) combination
+#   - SHA256SUMS checksum file
+#   - GitHub Release draft with grouped changelog
+#
+# Signing is deferred; see docs/adr/0017-release-automation.md.
+
+version: 2
+
+project_name: toymq
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: toymq
+    main: ./cmd/toymq
+    binary: toymq
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: toymqctl
+    main: ./cmd/toymqctl
+    binary: toymqctl
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: toymq-bench
+    main: ./cmd/toymq-bench
+    binary: toymq-bench
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: toymq-tui
+    main: ./cmd/toymq-tui
+    binary: toymq-tui
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- if eq .Os "darwin" }}macos{{ else }}{{ .Os }}{{ end }}_
+      {{- .Arch }}
+    files:
+      - README.md
+      - LICENSE
+      - docs/adr/README.md
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  sort: asc
+  use: git
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Docs
+      regexp: '^.*?docs(\(.+\))??!?:.+$'
+      order: 2
+    - title: Chores
+      regexp: '^.*?chore(\(.+\))??!?:.+$'
+      order: 3
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - '^Merge '
+      - '^test:'
+
+release:
+  draft: true
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+  header: |
+    ## ToyMQ {{ .Tag }}
+
+    See the [Architecture Decision Records](./docs/adr/README.md) for
+    rationale behind any non-obvious change.
+  footer: |
+    ---
+
+    **Full Changelog:** https://github.com/prajwalmahajan101/toymq/compare/{{ .PreviousTag }}...{{ .Tag }}
