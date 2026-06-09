@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -35,6 +36,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 
