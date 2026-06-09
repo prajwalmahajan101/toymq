@@ -177,6 +177,49 @@ func TestUpdate_MsgArrivedAutoAcks(t *testing.T) {
 	}
 }
 
+func TestUpdate_PubModalTabReturnsCmd(t *testing.T) {
+	m := freshModel(t)
+	// Open the pub modal.
+	next, _ := m.Update(key("p"))
+	opened := next.(model)
+	if opened.state != statePubModal || opened.pubFocus != 0 {
+		t.Fatalf("setup: state=%v focus=%d, want pubModal/0",
+			opened.state, opened.pubFocus)
+	}
+	// Tab to the next field. The handler must return a non-nil Cmd
+	// (the textinput blink) so the cursor keeps animating on the
+	// newly focused payload field.
+	next, cmd := opened.Update(keyType(tea.KeyTab))
+	got := next.(model)
+	if got.pubFocus != 1 {
+		t.Fatalf("pubFocus = %d, want 1 after Tab", got.pubFocus)
+	}
+	if cmd == nil {
+		t.Fatalf("Tab returned nil Cmd; textinput.Focus() blink Cmd dropped")
+	}
+}
+
+func TestUpdate_TransportLostClearsLastDelivery(t *testing.T) {
+	m := freshModel(t)
+	ch := make(chan client.Delivery, 1)
+	m.deliveryCh = ch
+	m.lastDelivery = &client.Delivery{MsgID: 7}
+
+	next, _ := m.Update(transportLostMsg{err: client.ErrTransport})
+	got := next.(model)
+
+	if got.state != stateDisconnected {
+		t.Fatalf("state = %v, want stateDisconnected", got.state)
+	}
+	if got.lastDelivery != nil {
+		t.Fatalf("lastDelivery = %+v, want nil after transport loss",
+			got.lastDelivery)
+	}
+	if got.deliveryCh != nil {
+		t.Fatalf("deliveryCh not cleared after transport loss")
+	}
+}
+
 func TestLog_TrimsToMaxScrollback(t *testing.T) {
 	m := freshModel(t)
 	for i := 0; i < maxScrollback+50; i++ {
