@@ -37,3 +37,20 @@ func TestRun_Help(t *testing.T) {
 		t.Fatalf("stdout=%q", out.String())
 	}
 }
+
+func TestRoundTrip_PubSub(t *testing.T) {
+	addr := startBroker(t)
+	var out, errBuf bytes.Buffer
+	run(context.Background(),
+		[]string{"pub", "--addr", addr, "orders", "hello"}, &out, &errBuf)
+	out.Reset()
+	code := run(context.Background(),
+		[]string{"sub", "--addr", addr, "--max-msgs", "1", "orders", "c1"},
+		&out, &errBuf)
+	if code != exitOK {
+		t.Fatalf("code=%d", code)
+	}
+	if !strings.Contains(out.String(), `payload="hello"`) {
+		t.Fatalf("stdout=%q", out.String())
+	}
+}
