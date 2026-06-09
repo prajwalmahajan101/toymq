@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
+	"net"
 
 	"github.com/prajwalmahajan101/toymq/internal/broker"
 	"github.com/prajwalmahajan101/toymq/internal/proto"
@@ -16,6 +18,9 @@ const (
 	sendChBuf         = 64
 )
 
+// Session is the per-connection state machine: one reader goroutine
+// parsing commands, one writer goroutine serializing OK/MSG/DUP/ERR
+// frames, and the two channels they share. See ADR 0008.
 type Session struct {
 	conn       io.ReadWriteCloser
 	broker     *broker.Broker
@@ -33,6 +38,8 @@ type Session struct {
 	currentCancel context.CancelFunc
 }
 
+// NewSession builds an idle Session ready for Run. The underlying
+// conn is closed by Run on exit.
 func NewSession(conn io.ReadWriteCloser, b *broker.Broker) *Session {
 	return &Session{
 		conn:       conn,
@@ -45,7 +52,14 @@ func NewSession(conn io.ReadWriteCloser, b *broker.Broker) *Session {
 	}
 }
 
+// Run starts the writer goroutine, runs the reader inline, then
+// tears down the subscription (if any), signals the writer to exit,
+// waits, and closes the conn. Blocks until the connection closes
+// or ctx cancels.
 func (s *Session) Run(ctx context.Context) {
+	remote := remoteAddr(s.conn)
+	slog.Debug("session opened", "remote-addr", remote)
+
 	go s.runWriter()
 
 	s.runReader(ctx)
@@ -56,6 +70,18 @@ func (s *Session) Run(ctx context.Context) {
 	close(s.quit)
 	<-s.writerDone
 	_ = s.conn.Close()
+	slog.Debug("session closed", "remote-addr", remote)
+}
+
+// remoteAddr extracts the conn's remote address when it's a real
+// net.Conn; tests pass io.ReadWriteCloser wrappers (e.g. net.Pipe
+// halves) that don't expose one — fall back to "unknown" so logging
+// stays useful without panicking.
+func remoteAddr(conn io.ReadWriteCloser) string {
+	if c, ok := conn.(net.Conn); ok {
+		return c.RemoteAddr().String()
+	}
+	return "unknown"
 }
 
 func (s *Session) runReader(ctx context.Context) {

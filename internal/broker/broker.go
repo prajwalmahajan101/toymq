@@ -18,6 +18,9 @@ const (
 	defaultPersistInterval   = 100 * time.Millisecond
 )
 
+// Broker is the in-process facade over the lazy topic registry. It
+// owns the persist and redelivery loops and the topic-recovery walk
+// performed at New. See ADR 0005.
 type Broker struct {
 	dataDir   string
 	dedupeCap int
@@ -37,6 +40,9 @@ type Broker struct {
 	redeliverDone   chan struct{}
 }
 
+// New opens (or recovers) a Broker rooted at dataDir with per-topic
+// dedupe LRU capacity dedupeCap. Uses production timings (30s
+// visibility, 1s redeliver tick); tests use NewWithTimings.
 func New(dataDir string, dedupeCap int) (*Broker, error) {
 	return NewWithTimings(dataDir, dedupeCap, defaultVisibilityTimeout, defaultRedeliverInterval)
 }
@@ -90,6 +96,11 @@ func NewWithTimings(dataDir string, dedupeCap int, visibility, redeliverInterval
 	go b.runPersistLoop(100 * time.Millisecond)
 	go b.runRedeliverLoop(b.redeliverInterval)
 
+	slog.Info("broker opened",
+		"data-dir", b.dataDir,
+		"topics-recovered", len(b.topics),
+		"dedupe-cap", dedupeCap,
+	)
 	return b, nil
 }
 
@@ -162,9 +173,14 @@ func (b *Broker) getOrCreateTopic(name string) (*Topic, error) {
 
 	t = newTopic(name, log, b.dedupeCap)
 	b.topics[name] = t
+	slog.Info("topic created", "topic", name)
 	return t, nil
 }
 
+// Publish appends payload to topic and returns (msgID, duplicate?,
+// err). A non-empty key activates dedupe: a second publish with the
+// same key returns the original MsgID and duplicate=true without a
+// new WAL write.
 func (b *Broker) Publish(topic, key string, payload []byte) (uint64, bool, error) {
 	t, err := b.getOrCreateTopic(topic)
 	if err != nil {
@@ -173,6 +189,9 @@ func (b *Broker) Publish(topic, key string, payload []byte) (uint64, bool, error
 	return t.Publish(key, payload)
 }
 
+// Close cancels the redelivery and persist loops (in that order so
+// any Attempts bumps land in the final flush), then closes every
+// open WAL. Returns the first error encountered.
 func (b *Broker) Close() error {
 	b.redeliverCancel()
 	<-b.redeliverDone
@@ -188,9 +207,14 @@ func (b *Broker) Close() error {
 			firstErr = err
 		}
 	}
+	slog.Info("broker closed")
 	return firstErr
 }
 
+// Subscribe attaches consumerID to topic. Subsequent Inflight
+// snapshots stream into sendCh until ctx cancels. A second Subscribe
+// for the same consumerID detaches the previous Subscription before
+// the new delivery goroutine starts.
 func (b *Broker) Subscribe(ctx context.Context, topic, consumerID string, sendCh chan<- *Inflight) (*Subscription, error) {
 	t, err := b.getOrCreateTopic(topic)
 	if err != nil {
@@ -199,6 +223,9 @@ func (b *Broker) Subscribe(ctx context.Context, topic, consumerID string, sendCh
 	return t.Subscribe(ctx, consumerID, sendCh)
 }
 
+// Ack records that consumerID successfully processed msgID on topic.
+// Advances lastAcked when msgID is contiguous; otherwise records in
+// aboveLast. Marks the consumer dirty for the next persist tick.
 func (b *Broker) Ack(topic, consumerID string, msgID uint64) error {
 	t, err := b.getOrCreateTopic(topic)
 	if err != nil {
@@ -208,6 +235,9 @@ func (b *Broker) Ack(topic, consumerID string, msgID uint64) error {
 	return c.Ack(msgID)
 }
 
+// Nack pushes a fresh Inflight snapshot back onto sendCh for
+// immediate redelivery (non-blocking; the redelivery ticker covers
+// the buffer-full case) and bumps Attempts.
 func (b *Broker) Nack(topic, consumerID string, msgID uint64, sendCh chan<- *Inflight) error {
 	t, err := b.getOrCreateTopic(topic)
 	if err != nil {

@@ -18,6 +18,9 @@ const (
 	emfileBackoffMax = time.Second
 )
 
+// Server wraps the TCP listener and per-connection Session
+// lifecycle. One Server per broker process; goroutine ownership is
+// documented in ADR 0008.
 type Server struct {
 	addr   string
 	broker *broker.Broker
@@ -29,6 +32,8 @@ type Server struct {
 	wg        sync.WaitGroup
 }
 
+// New constructs an unstarted Server bound to addr against broker b.
+// Call Serve to start accepting; Shutdown to drain.
 func New(addr string, b *broker.Broker) *Server {
 	return &Server{addr: addr, broker: b}
 }
@@ -60,6 +65,10 @@ func (s *Server) closeListenerOnce() error {
 	return err
 }
 
+// Serve binds the listener, then accepts connections and spawns one
+// Session per conn under the internal WaitGroup. Returns nil when
+// the listener closes cleanly (via Shutdown); returns an error for
+// fatal Accept failures.
 func (s *Server) Serve(ctx context.Context) error {
 	// Count Serve itself in the wg. This forces wg.Add(1) to happen
 	// before listener assignment, which is the synchronization point
@@ -77,6 +86,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	s.mu.Lock()
 	s.listener = l
 	s.mu.Unlock()
+
+	slog.Info("listening", "addr", l.Addr().String())
 
 	// serveCtx is cancelled when the ctx cancels OR Serve exits.
 	// The watcher uses it to know when to give up watching
@@ -130,7 +141,11 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
+// Shutdown closes the listener and waits for in-flight Sessions to
+// drain, bounded by ctx. Returns ctx.Err() on deadline; nil on a
+// clean drain.
 func (s *Server) Shutdown(ctx context.Context) error {
+	slog.Info("shutdown started")
 	_ = s.closeListenerOnce()
 
 	done := make(chan struct{})
@@ -140,6 +155,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		slog.Info("shutdown drained")
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

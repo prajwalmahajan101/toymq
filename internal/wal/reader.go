@@ -7,6 +7,9 @@ import (
 	"os"
 )
 
+// Reader is a tailing cursor into a Log. One Reader per active
+// subscription; readers do not block writers (writers serialize
+// through Log.mu, readers cap at the atomic committed offset).
 type Reader struct {
 	log *Log
 	f   *os.File
@@ -14,6 +17,9 @@ type Reader struct {
 	pos uint64
 }
 
+// NewReader opens a fresh fd on the segment, scans forward to the
+// first record with MsgID >= fromMsgID, and returns a Reader
+// positioned there. Callers must Close the Reader.
 func (l *Log) NewReader(fromMsgID uint64) (*Reader, error) {
 	f, err := os.Open(l.path)
 	if err != nil {
@@ -52,6 +58,9 @@ func (l *Log) NewReader(fromMsgID uint64) (*Reader, error) {
 	return r, nil
 }
 
+// Next returns the next Record after the current position, blocking
+// on the log's cond-var until one is appended. Returns ctx.Err() if
+// ctx cancels while waiting.
 func (r *Reader) Next(ctx context.Context) (Record, error) {
 	done := make(chan struct{})
 	defer close(done)
@@ -86,6 +95,7 @@ func (r *Reader) Next(ctx context.Context) (Record, error) {
 	}
 }
 
+// Close releases the Reader's fd. Independent of Log.Close.
 func (r *Reader) Close() error {
 	return r.f.Close()
 }

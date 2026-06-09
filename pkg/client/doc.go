@@ -10,4 +10,10 @@
 // permanently closes the Client and surfaces as ErrTransport. Wrap
 // with your own backoff loop, or use a higher-level helper once one
 // lands.
+//
+// Logging is opt-in. The Client is silent by default (see ADR 0013);
+// pass WithLogger to attach a slog.Logger and receive debug records
+// on Dial / Sub / Close and a warn on transport loss:
+//
+//	c, err := client.Dial(ctx, addr, client.WithLogger(slog.Default()))
 package client

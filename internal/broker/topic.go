@@ -2,12 +2,15 @@ package broker
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/wal"
 )
 
+// Subscription is the per-Subscribe handle. cancel stops the
+// delivery goroutine; done closes when that goroutine exits.
 type Subscription struct {
 	consumerID string
 	sendCh     chan<- *Inflight
@@ -15,6 +18,9 @@ type Subscription struct {
 	done       chan struct{}
 }
 
+// Topic owns the WAL, dedupe LRU, and consumer registry for one
+// logical stream. Created lazily by Broker.getOrCreateTopic; never
+// constructed directly outside the package.
 type Topic struct {
 	name   string
 	log    *wal.Log
@@ -35,6 +41,9 @@ func newTopic(name string, log *wal.Log, dedupeCap int) *Topic {
 	}
 }
 
+// Publish appends payload under the topic. A non-empty key activates
+// dedupe — a second call with the same key returns the original
+// MsgID and duplicate=true without a new WAL write.
 func (t *Topic) Publish(key string, payload []byte) (msgID uint64, duplicate bool, err error) {
 	t.pubMu.Lock()
 	defer t.pubMu.Unlock()
@@ -131,6 +140,10 @@ func (t *Topic) runDelivery(ctx context.Context, c *Consumer, sub *Subscription,
 	}
 }
 
+// Subscribe binds consumerID to a fresh delivery goroutine that
+// tails the WAL from lastAcked+1 and forwards Inflight snapshots to
+// sendCh. A second Subscribe for the same consumerID detaches the
+// previous Subscription before the new goroutine starts.
 func (t *Topic) Subscribe(ctx context.Context, consumerID string, sendCh chan<- *Inflight) (*Subscription, error) {
 	c := t.getOrCreateConsumer(consumerID)
 
@@ -152,6 +165,19 @@ func (t *Topic) Subscribe(ctx context.Context, consumerID string, sendCh chan<- 
 		prev.cancel()
 		<-prev.done
 	}
+
+	c.mu.Lock()
+	var startID uint64
+	if c.hasAcked {
+		startID = c.lastAcked + 1
+	}
+	c.mu.Unlock()
+	slog.Info("consumer subscribed",
+		"topic", t.name,
+		"consumer-id", consumerID,
+		"from-msg-id", startID,
+	)
+
 	go t.runDelivery(subCtx, c, sub, sendCh)
 	return sub, nil
 }
