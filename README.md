@@ -358,6 +358,9 @@ make ci      # fmt-check + vet + lint + test -race
 CI runs on Go 1.25.x and 1.26.x with `golangci-lint`; the chaos
 suite and Docker build run on every push.
 
+Have an idea? Open a PR against [`IDEA.md`](./IDEA.md) — it's a
+living doc.
+
 ---
 
 ## Benchmarks
