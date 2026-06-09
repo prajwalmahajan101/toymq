@@ -9,7 +9,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prajwalmahajan101/toymq/internal/metrics"
+	"github.com/prajwalmahajan101/toymq/internal/tracing"
 	"github.com/prajwalmahajan101/toymq/internal/wal"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -38,6 +42,13 @@ type Broker struct {
 	redeliverCtx    context.Context
 	redeliverCancel context.CancelFunc
 	redeliverDone   chan struct{}
+
+	// metrics and tracer are optional; nil means "observability
+	// off". Helpers on *Metrics already nil-check, and the noop
+	// TracerProvider returns no-op spans, so call sites stay
+	// branch-free.
+	metrics *metrics.Metrics
+	tracer  trace.Tracer
 }
 
 // New opens (or recovers) a Broker rooted at dataDir with per-topic
@@ -45,6 +56,21 @@ type Broker struct {
 // visibility, 1s redeliver tick); tests use NewWithTimings.
 func New(dataDir string, dedupeCap int) (*Broker, error) {
 	return NewWithTimings(dataDir, dedupeCap, defaultVisibilityTimeout, defaultRedeliverInterval)
+}
+
+// NewWithObservability is NewWithTimings plus optional metrics +
+// tracer wiring. cmd/toymq calls this with non-nil m and tr when
+// --metrics-addr or --otlp-endpoint is set; tests pass nil and get
+// the same behaviour as New.
+func NewWithObservability(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration, m *metrics.Metrics, tr trace.Tracer) (*Broker, error) {
+	b, err := NewWithTimings(dataDir, dedupeCap, visibility, redeliverInterval)
+	if err != nil {
+		return nil, err
+	}
+	b.metrics = m
+	b.tracer = tr
+	b.metrics.SetTopicCount(len(b.topics))
+	return b, nil
 }
 
 // NewWithTimings constructs a Broker with explicit visibility and
@@ -133,9 +159,11 @@ func (b *Broker) flushDirty() {
 		if !topicHasDirty(t) {
 			continue
 		}
-		if err := t.flushOffsets(b.dataDir); err != nil {
+		err := t.flushOffsets(b.dataDir)
+		if err != nil {
 			slog.Error("flush offsets", "topic", t.name, "err", err)
 		}
+		b.metrics.IncOffsetsFlush(t.name, err == nil)
 	}
 }
 
@@ -173,6 +201,7 @@ func (b *Broker) getOrCreateTopic(name string) (*Topic, error) {
 
 	t = newTopic(name, log, b.dedupeCap)
 	b.topics[name] = t
+	b.metrics.SetTopicCount(len(b.topics))
 	slog.Info("topic created", "topic", name)
 	return t, nil
 }
@@ -180,13 +209,36 @@ func (b *Broker) getOrCreateTopic(name string) (*Topic, error) {
 // Publish appends payload to topic and returns (msgID, duplicate?,
 // err). A non-empty key activates dedupe: a second publish with the
 // same key returns the original MsgID and duplicate=true without a
-// new WAL write.
+// new WAL write. Equivalent to PublishCtx(context.Background(), ...).
 func (b *Broker) Publish(topic, key string, payload []byte) (uint64, bool, error) {
+	return b.PublishCtx(context.Background(), topic, key, payload)
+}
+
+// PublishCtx is Publish with a context that carries the OTel span.
+// The broker creates a "broker.publish" span when a tracer is wired;
+// otherwise the span is a no-op and ctx is only used as the cancel
+// boundary for future tracing additions.
+func (b *Broker) PublishCtx(ctx context.Context, topic, key string, payload []byte) (uint64, bool, error) {
+	ctx, span := b.startSpan(ctx, "broker.publish",
+		tracing.AttrTopic.String(topic),
+		tracing.AttrPayloadBytes.Int(len(payload)),
+	)
+	defer span.End()
+
 	t, err := b.getOrCreateTopic(topic)
 	if err != nil {
 		return 0, false, err
 	}
-	return t.Publish(key, payload)
+	id, dup, err := t.publishCtx(ctx, key, payload, b.metrics)
+	if err == nil {
+		span.SetAttributes(tracing.AttrDuplicate.Bool(dup))
+		if dup {
+			b.metrics.IncPublishDup(topic)
+		} else {
+			b.metrics.IncPublish(topic, len(payload))
+		}
+	}
+	return id, dup, err
 }
 
 // Close cancels the redelivery and persist loops (in that order so
@@ -216,11 +268,32 @@ func (b *Broker) Close() error {
 // for the same consumerID detaches the previous Subscription before
 // the new delivery goroutine starts.
 func (b *Broker) Subscribe(ctx context.Context, topic, consumerID string, sendCh chan<- *Inflight) (*Subscription, error) {
+	ctx, span := b.startSpan(ctx, "broker.subscribe",
+		tracing.AttrTopic.String(topic),
+		tracing.AttrConsumerID.String(consumerID),
+	)
+	defer span.End()
+
 	t, err := b.getOrCreateTopic(topic)
 	if err != nil {
 		return nil, err
 	}
-	return t.Subscribe(ctx, consumerID, sendCh)
+	sub, err := t.subscribe(ctx, consumerID, sendCh, b.metrics)
+	if err == nil {
+		b.metrics.IncSubscribe(topic)
+	}
+	return sub, err
+}
+
+// startSpan is the broker's single entry point for tracer.Start —
+// keeps the nil-tracer check in one place. With the noop provider
+// (when --otlp-endpoint is empty) the returned span has IsRecording
+// == false and every SetAttributes/End call is a no-op.
+func (b *Broker) startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	if b.tracer == nil {
+		return ctx, trace.SpanFromContext(ctx)
+	}
+	return b.tracer.Start(ctx, name, trace.WithAttributes(attrs...))
 }
 
 // Ack records that consumerID successfully processed msgID on topic.
@@ -232,7 +305,14 @@ func (b *Broker) Ack(topic, consumerID string, msgID uint64) error {
 		return err
 	}
 	c := t.getOrCreateConsumer(consumerID)
-	return c.Ack(msgID)
+	if err := c.Ack(msgID); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	n := len(c.inflight)
+	c.mu.Unlock()
+	b.metrics.SetInflight(topic, consumerID, n)
+	return nil
 }
 
 // Nack pushes a fresh Inflight snapshot back onto sendCh for
@@ -244,5 +324,12 @@ func (b *Broker) Nack(topic, consumerID string, msgID uint64, sendCh chan<- *Inf
 		return err
 	}
 	c := t.getOrCreateConsumer(consumerID)
-	return c.Nack(msgID, sendCh)
+	if err := c.Nack(msgID, sendCh); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	n := len(c.inflight)
+	c.mu.Unlock()
+	b.metrics.SetInflight(topic, consumerID, n)
+	return nil
 }

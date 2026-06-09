@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/broker"
+	"github.com/prajwalmahajan101/toymq/internal/metrics"
 )
 
 const (
@@ -30,12 +31,23 @@ type Server struct {
 
 	closeOnce sync.Once
 	wg        sync.WaitGroup
+
+	// metrics is optional; nil means "metrics off". Helpers on
+	// *metrics.Metrics already nil-check.
+	metrics *metrics.Metrics
 }
 
 // New constructs an unstarted Server bound to addr against broker b.
 // Call Serve to start accepting; Shutdown to drain.
 func New(addr string, b *broker.Broker) *Server {
 	return &Server{addr: addr, broker: b}
+}
+
+// NewWithObservability is New plus a *Metrics pointer. The Server
+// uses it to maintain the toymq_active_sessions gauge. nil m yields
+// the same behaviour as New.
+func NewWithObservability(addr string, b *broker.Broker, m *metrics.Metrics) *Server {
+	return &Server{addr: addr, broker: b, metrics: m}
 }
 
 // Addr returns the actual bound address. Useful when New was given
@@ -134,6 +146,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		s.wg.Add(1)
 		go func(c net.Conn) {
 			defer s.wg.Done()
+			s.metrics.IncSessions()
+			defer s.metrics.DecSessions()
 			sess := NewSession(c, s.broker)
 			sess.Run(ctx)
 		}(conn)
