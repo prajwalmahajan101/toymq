@@ -7,13 +7,18 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/broker"
 	"github.com/prajwalmahajan101/toymq/internal/config"
+	"github.com/prajwalmahajan101/toymq/internal/metrics"
 	"github.com/prajwalmahajan101/toymq/internal/server"
+	"github.com/prajwalmahajan101/toymq/internal/tracing"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -43,9 +48,33 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		"data-dir", cfg.DataDir,
 		"shutdown-timeout", cfg.ShutdownTimeout,
 		"dedupe-cap", cfg.DedupeCap,
+		"metrics-addr", cfg.MetricsAddr,
+		"otlp-endpoint", cfg.OTLPEndpoint,
 	)
 
-	b, err := broker.New(cfg.DataDir, cfg.DedupeCap)
+	// Observability (off by default per ADR 0015). Both blocks are
+	// no-ops when the corresponding flag is empty.
+	var (
+		mtr *metrics.Metrics
+		reg = metrics.NewRegistry()
+	)
+	if cfg.MetricsAddr != "" {
+		mtr = metrics.New(reg)
+	}
+
+	tp, err := tracing.New(ctx, cfg.OTLPEndpoint, cfg.ServiceVersion, cfg.TraceSampleRatio)
+	if err != nil {
+		return fmt.Errorf("tracing: %w", err)
+	}
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tp.Shutdown(shutCtx); err != nil {
+			logger.Warn("tracer shutdown", "err", err)
+		}
+	}()
+
+	b, err := broker.NewWithObservability(cfg.DataDir, cfg.DedupeCap, 30*time.Second, 1*time.Second, mtr, tp.Tracer())
 	if err != nil {
 		return fmt.Errorf("broker: %w", err)
 	}
@@ -55,7 +84,33 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 	}()
 
-	srv := server.New(cfg.Addr, b)
+	srv := server.NewWithObservability(cfg.Addr, b, mtr)
+
+	// Metrics HTTP server (optional). Lives on a separate goroutine
+	// keyed by cfg.MetricsAddr so the broker's TCP wire-protocol
+	// port stays unmuxed.
+	var metricsSrv *http.Server
+	metricsErr := make(chan error, 1)
+	if cfg.MetricsAddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("ok"))
+		})
+		metricsSrv = &http.Server{
+			Addr:              cfg.MetricsAddr,
+			Handler:           mux,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			logger.Info("metrics listening", "addr", cfg.MetricsAddr)
+			err := metricsSrv.ListenAndServe()
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				metricsErr <- err
+			}
+			close(metricsErr)
+		}()
+	}
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -83,6 +138,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	if err := <-serveErr; err != nil {
 		return fmt.Errorf("serve after shutdown: %w", err)
+	}
+
+	if metricsSrv != nil {
+		if err := metricsSrv.Shutdown(shutCtx); err != nil {
+			logger.Warn("metrics shutdown", "err", err)
+		}
+		// Drain the goroutine's err channel.
+		if err, ok := <-metricsErr; ok && err != nil {
+			logger.Warn("metrics serve", "err", err)
+		}
 	}
 
 	return nil

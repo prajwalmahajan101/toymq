@@ -1,11 +1,19 @@
-# Convenience compose file for local hacking. Production use is out of
-# scope; ToyMQ is single-node and has no replication or auth.
+# Convenience compose stack for local hacking. Production use is out
+# of scope; ToyMQ is single-node and has no replication or auth.
 #
 # Run:
 #   docker compose up -d
+#   open http://localhost:3000   # Grafana (anonymous viewer)
+#   open http://localhost:9090   # Prometheus
 #   toymqctl pub orders hello
 #   toymqctl sub orders c1
-#   docker compose down
+#   docker compose down -v       # -v also wipes the data volume
+#
+# Ports:
+#   6789  ToyMQ wire protocol (broker)
+#   6790  ToyMQ /metrics + /healthz
+#   9090  Prometheus UI
+#   3000  Grafana UI (anonymous Viewer; admin/admin to edit)
 
 services:
   toymq:
@@ -14,9 +22,59 @@ services:
     container_name: toymq
     ports:
       - "6789:6789"
+      - "6790:6790"
+    command:
+      - "--addr=0.0.0.0:6789"
+      - "--data-dir=/data"
+      - "--metrics-addr=0.0.0.0:6790"
     volumes:
       - toymq-data:/data
+    networks:
+      - toymq-obs
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.0.0
+    container_name: toymq-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    networks:
+      - toymq-obs
+    depends_on:
+      - toymq
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: toymq-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    networks:
+      - toymq-obs
+    depends_on:
+      - prometheus
     restart: unless-stopped
 
 volumes:
   toymq-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  toymq-obs:

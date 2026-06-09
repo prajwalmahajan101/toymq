@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prajwalmahajan101/toymq/internal/metrics"
 	"github.com/prajwalmahajan101/toymq/internal/wal"
 )
 
@@ -45,6 +46,14 @@ func newTopic(name string, log *wal.Log, dedupeCap int) *Topic {
 // dedupe — a second call with the same key returns the original
 // MsgID and duplicate=true without a new WAL write.
 func (t *Topic) Publish(key string, payload []byte) (msgID uint64, duplicate bool, err error) {
+	return t.publishCtx(context.Background(), key, payload, nil)
+}
+
+// publishCtx is Publish with a context (carrying any active OTel
+// span) and a *Metrics pointer for the WAL latency histogram. The
+// public Publish wraps it with a Background ctx and nil metrics for
+// callers that don't carry observability.
+func (t *Topic) publishCtx(ctx context.Context, key string, payload []byte, m *metrics.Metrics) (msgID uint64, duplicate bool, err error) {
 	t.pubMu.Lock()
 	defer t.pubMu.Unlock()
 
@@ -60,10 +69,13 @@ func (t *Topic) Publish(key string, payload []byte) (msgID uint64, duplicate boo
 		Payload:   payload,
 	}
 
+	start := time.Now()
 	id, _, err := t.log.Append(rec)
 	if err != nil {
 		return 0, false, err
 	}
+	m.ObserveWALAppend(t.name, time.Since(start).Seconds())
+
 	if key != "" {
 		t.dedupe.Insert(key, id)
 	}
@@ -90,8 +102,9 @@ func (t *Topic) getOrCreateConsumer(id string) *Consumer {
 	return c
 }
 
-func (t *Topic) runDelivery(ctx context.Context, c *Consumer, sub *Subscription, sendCh chan<- *Inflight) {
+func (t *Topic) runDelivery(ctx context.Context, c *Consumer, sub *Subscription, sendCh chan<- *Inflight, m *metrics.Metrics) {
 	defer close(sub.done)
+	defer m.DecSubs()
 
 	c.mu.Lock()
 	var startID uint64
@@ -126,7 +139,9 @@ func (t *Topic) runDelivery(ctx context.Context, c *Consumer, sub *Subscription,
 		c.mu.Lock()
 		c.inflight[rec.MsgID] = inf
 		snapshot := *inf
+		inflightLen := len(c.inflight)
 		c.mu.Unlock()
+		m.SetInflight(t.name, c.ID, inflightLen)
 
 		select {
 		case sendCh <- &snapshot:
@@ -145,6 +160,10 @@ func (t *Topic) runDelivery(ctx context.Context, c *Consumer, sub *Subscription,
 // sendCh. A second Subscribe for the same consumerID detaches the
 // previous Subscription before the new goroutine starts.
 func (t *Topic) Subscribe(ctx context.Context, consumerID string, sendCh chan<- *Inflight) (*Subscription, error) {
+	return t.subscribe(ctx, consumerID, sendCh, nil)
+}
+
+func (t *Topic) subscribe(ctx context.Context, consumerID string, sendCh chan<- *Inflight, m *metrics.Metrics) (*Subscription, error) {
 	c := t.getOrCreateConsumer(consumerID)
 
 	subCtx, cancel := context.WithCancel(ctx)
@@ -178,6 +197,7 @@ func (t *Topic) Subscribe(ctx context.Context, consumerID string, sendCh chan<- 
 		"from-msg-id", startID,
 	)
 
-	go t.runDelivery(subCtx, c, sub, sendCh)
+	m.IncSubs()
+	go t.runDelivery(subCtx, c, sub, sendCh, m)
 	return sub, nil
 }
