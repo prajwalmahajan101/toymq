@@ -19,7 +19,12 @@ type Consumer struct {
 	ID    string
 	topic *Topic
 
-	mu        sync.Mutex
+	mu sync.Mutex
+	// hasAcked distinguishes "never acked anything" from "acked
+	// MsgID 0", since uint64 can't represent the former with a
+	// sentinel. Without this, restart after acking MsgID 0 would
+	// look identical to a fresh consumer and trigger redelivery.
+	hasAcked  bool
 	lastAcked uint64
 	aboveLast map[uint64]struct{}
 	inflight  map[uint64]*Inflight
@@ -45,8 +50,9 @@ func (c *Consumer) Ack(msgID uint64) error {
 		return fmt.Errorf("ack: msg %d not in inflight for consumer %q", msgID, c.ID)
 	}
 	delete(c.inflight, msgID)
-	if msgID == c.lastAcked+1 || c.lastAcked == 0 && msgID == 0 {
+	if !c.hasAcked && msgID == 0 || c.hasAcked && msgID == c.lastAcked+1 {
 		c.lastAcked = msgID
+		c.hasAcked = true
 		for {
 			next := c.lastAcked + 1
 			if _, ok := c.aboveLast[next]; !ok {
@@ -55,7 +61,7 @@ func (c *Consumer) Ack(msgID uint64) error {
 			delete(c.aboveLast, next)
 			c.lastAcked = next
 		}
-	} else if msgID > c.lastAcked+1 {
+	} else if !c.hasAcked || msgID > c.lastAcked+1 {
 		c.aboveLast[msgID] = struct{}{}
 	}
 	c.persistDirty.Store(true)

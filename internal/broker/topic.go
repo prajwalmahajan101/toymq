@@ -85,11 +85,13 @@ func (t *Topic) runDelivery(ctx context.Context, c *Consumer, sub *Subscription,
 	defer close(sub.done)
 
 	c.mu.Lock()
-	startID := c.lastAcked + 1
-
-	if c.lastAcked == 0 && len(c.inflight) == 0 && len(c.aboveLast) == 0 {
-		startID = 0 // fresh consumer- start from msg 0
+	var startID uint64
+	if c.hasAcked {
+		startID = c.lastAcked + 1
 	}
+	// fresh consumer (never acked) starts at MsgID 0 regardless of
+	// any prior aboveLast entries — those came from out-of-order
+	// acks above lastAcked and don't shift the start point.
 	c.mu.Unlock()
 
 	reader, err := t.log.NewReader(startID)
