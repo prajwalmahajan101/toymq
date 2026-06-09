@@ -69,6 +69,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case transportLostMsg:
 		m.state = stateDisconnected
 		m.transportErr = msg.err
+		// Terminal state for the subscription chain: drop the
+		// channel reference (the readLoop already closed it) and
+		// the lastDelivery so any future affordance that fires
+		// nackCmd outside stateMain cannot call Delivery.Nack on a
+		// closed Client. Today stateDisconnected blocks all keys
+		// except q, so this is defensive.
+		m.deliveryCh = nil
+		m.lastDelivery = nil
 		if msg.err != nil && errors.Is(msg.err, client.ErrTransport) {
 			m.log(fmt.Sprintf("disconnected: %v", msg.err))
 		} else {
@@ -137,12 +145,10 @@ func (m model) handlePubKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "tab", "down":
 		m.pubFocus = (m.pubFocus + 1) % 3
-		m.focusPubField()
-		return m, nil
+		return m, m.focusPubField()
 	case "shift+tab", "up":
 		m.pubFocus = (m.pubFocus + 2) % 3
-		m.focusPubField()
-		return m, nil
+		return m, m.focusPubField()
 	case "enter":
 		topic := m.pubTopic.Value()
 		payload := m.pubPayload.Value()
@@ -167,12 +173,10 @@ func (m model) handleSubKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "tab", "down":
 		m.subFocus = (m.subFocus + 1) % 2
-		m.focusSubField()
-		return m, nil
+		return m, m.focusSubField()
 	case "shift+tab", "up":
 		m.subFocus = (m.subFocus + 1) % 2
-		m.focusSubField()
-		return m, nil
+		return m, m.focusSubField()
 	case "enter":
 		topic := m.subTopic.Value()
 		cid := m.subConsumer.Value()
@@ -188,29 +192,36 @@ func (m model) handleSubKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.forwardToInput(msg)
 }
 
-func (m *model) focusPubField() {
+// focusPubField sets focus on the textinput selected by pubFocus and
+// returns the blink Cmd from textinput.Focus(). Callers must forward
+// the Cmd up to Bubble Tea so the cursor restarts blinking on the
+// new field after Tab cycling.
+func (m *model) focusPubField() tea.Cmd {
 	m.pubTopic.Blur()
 	m.pubPayload.Blur()
 	m.pubDedupe.Blur()
 	switch m.pubFocus {
 	case 0:
-		m.pubTopic.Focus()
+		return m.pubTopic.Focus()
 	case 1:
-		m.pubPayload.Focus()
+		return m.pubPayload.Focus()
 	case 2:
-		m.pubDedupe.Focus()
+		return m.pubDedupe.Focus()
 	}
+	return nil
 }
 
-func (m *model) focusSubField() {
+// focusSubField is the two-field analogue of focusPubField.
+func (m *model) focusSubField() tea.Cmd {
 	m.subTopic.Blur()
 	m.subConsumer.Blur()
 	switch m.subFocus {
 	case 0:
-		m.subTopic.Focus()
+		return m.subTopic.Focus()
 	case 1:
-		m.subConsumer.Focus()
+		return m.subConsumer.Focus()
 	}
+	return nil
 }
 
 // forwardToInput routes character input to the focused textinput.
