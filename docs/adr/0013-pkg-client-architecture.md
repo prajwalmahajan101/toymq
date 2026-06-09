@@ -65,6 +65,12 @@ correct broker behaviour the IDs always match — but cheap, and it
 turns a future protocol mistake into a loud error instead of silent
 drift.
 
+ACK and NACK are reachable via two surfaces: `Client.Ack` /
+`Client.Nack` for callers that already know the consumer ID and
+msg-id (e.g. `cmd/toymqctl ack`), and `Delivery.Ack` / `Delivery.Nack`
+closures for the streaming case. Both paths route through the same
+`sendAckLike` helper and the same pending FIFO.
+
 ### Single subscription per Client
 
 `Sub` claims `subActive`; a second `Sub` on the same Client returns
