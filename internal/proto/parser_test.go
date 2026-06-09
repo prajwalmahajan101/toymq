@@ -79,6 +79,12 @@ func TestReadCommandErrors(t *testing.T) {
 		{"ACK bad id", "ACK consumer-1 notanumber\n", ErrInvalidCommand},
 		{"NACK missing arg", "NACK consumer-1\n", ErrInvalidCommand},
 		{"empty line", "\n", ErrInvalidCommand},
+		{"EOF mid-line", "PUB orders", ErrBadFraming},
+		{"ACK missing arg", "ACK consumer-1\n", ErrInvalidCommand},
+		{"ACK extra arg", "ACK c1 42 extra\n", ErrInvalidCommand},
+		{"NACK extra arg", "NACK c1 42 extra\n", ErrInvalidCommand},
+		{"NACK bad id", "NACK c1 notanumber\n", ErrInvalidCommand},
+		{"SUB extra arg", "SUB t c1 extra\n", ErrInvalidCommand},
 	}
 
 	for _, tc := range cases {
@@ -96,6 +102,15 @@ func TestReadCommandErrors(t *testing.T) {
 		_, err := ReadCommand(br, 50) // max=50, payload=100
 		if !errors.Is(err, ErrPayloadTooLarge) {
 			t.Errorf("err = %v, want ErrPayloadTooLarge", err)
+		}
+	})
+
+	t.Run("line exceeds MaxLineLength", func(t *testing.T) {
+		input := strings.Repeat("a", MaxLineLength+10) + "\n"
+		br := bufio.NewReader(strings.NewReader(input))
+		_, err := ReadCommand(br, testMaxPayload)
+		if !errors.Is(err, ErrBadFraming) {
+			t.Errorf("err = %v, want ErrBadFraming", err)
 		}
 	})
 }
