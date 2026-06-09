@@ -1,0 +1,77 @@
+package client
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+func TestAck_RemovesFromBacklog(t *testing.T) {
+	addr := startBroker(t)
+
+	pub, _ := Dial(context.Background(), addr)
+	defer pub.Close()
+
+	for i := range 3 {
+		if _, _, err := pub.Pub(context.Background(), "orders", "", []byte{byte('a' + i)}); err != nil {
+			t.Fatalf("Pub: %v", err)
+		}
+	}
+
+	sub1, _ := Dial(context.Background(), addr)
+	ch1, err := sub1.Sub(context.Background(), "orders", "cg")
+	if err != nil {
+		t.Fatalf("Sub: %v", err)
+	}
+	d := <-ch1
+	firstID := d.MsgID
+	if err := d.Ack(context.Background()); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+	_ = sub1.Close()
+
+	sub2, _ := Dial(context.Background(), addr)
+	defer sub2.Close()
+	ch2, err := sub2.Sub(context.Background(), "orders", "cg")
+	if err != nil {
+		t.Fatalf("Sub: %v", err)
+	}
+	select {
+	case d := <-ch2:
+		if d.MsgID == firstID {
+			t.Fatalf("got already-acked msg %d again", firstID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no replay")
+	}
+}
+
+func TestNack_Redelivers(t *testing.T) {
+	addr := startBroker(t)
+
+	pub, _ := Dial(context.Background(), addr)
+	defer pub.Close()
+	if _, _, err := pub.Pub(context.Background(), "orders", "", []byte("x")); err != nil {
+		t.Fatalf("Pub: %v", err)
+	}
+
+	sub, _ := Dial(context.Background(), addr)
+	defer sub.Close()
+	ch, err := sub.Sub(context.Background(), "orders", "cg")
+	if err != nil {
+		t.Fatalf("Sub: %v", err)
+	}
+
+	d1 := <-ch
+	if err := d1.Nack(context.Background()); err != nil {
+		t.Fatalf("Nack: %v", err)
+	}
+	select {
+	case d2 := <-ch:
+		if d2.MsgID != d1.MsgID {
+			t.Fatalf("redelivery id mismatch: %d vs %d", d1.MsgID, d2.MsgID)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no redelivery after NACK")
+	}
+}
