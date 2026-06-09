@@ -18,10 +18,10 @@ type DedupeIndex struct {
 	byKey map[string]*list.Element
 }
 
-// NewDedupeIndex returns an empty DedupeIndex bounded at cap entries.
-func NewDedupeIndex(cap int) *DedupeIndex {
+// NewDedupeIndex returns an empty DedupeIndex bounded at capacity entries.
+func NewDedupeIndex(capacity int) *DedupeIndex {
 	return &DedupeIndex{
-		cap:   cap,
+		cap:   capacity,
 		order: list.New(),
 		byKey: make(map[string]*list.Element),
 	}
