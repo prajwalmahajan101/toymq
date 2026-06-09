@@ -3,7 +3,6 @@
 package chaos
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -59,7 +58,11 @@ func TestChaosSurvivesSIGKILL(t *testing.T) {
 	dataDir := t.TempDir()
 	addr := pickFreeAddr(t)
 
-	brokerErr := &bytes.Buffer{}
+	// brokerErr collects stderr from three concurrent writers: the
+	// broker subprocess (via io.Copy in supervisor) and the producer
+	// + consumer diagnostic logs. bytes.Buffer is not goroutine-safe,
+	// so wrap it.
+	brokerErr := &syncBuffer{}
 	sup := newSupervisor(brokerBinary, dataDir, addr, brokerErr)
 
 	if err := sup.start(); err != nil {
