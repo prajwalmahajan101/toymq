@@ -11,6 +11,10 @@
 run:
   timeout: 5m
   tests: true
+  # Pin analysis Go version to the lowest version golangci-lint itself
+  # supports. Decouples lint from go.mod's toolchain pin (1.26.3) so
+  # the action's prebuilt binary works without bumping versions.
+  go: '1.24'
   build-tags:
     - chaos
 
