@@ -3,9 +3,11 @@ package client
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 )
 
@@ -57,8 +59,7 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		opt(&cfg)
 	}
 
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	conn, err := dialConn(ctx, addr, cfg.tlsConfig)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
@@ -72,10 +73,62 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		logger:  cfg.logger,
 	}
 
+	// HELLO handshake, synchronous and before readLoop starts (readLoop
+	// owns c.r once running). See ADR 0020.
+	if err := c.handshake(cfg.authToken); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+
 	c.loopDone = make(chan struct{})
 	go c.readLoop()
 	c.log(slog.LevelDebug, "dialed", "addr", addr)
 	return c, nil
+}
+
+// dialConn opens a plaintext or TLS connection depending on tlsCfg.
+func dialConn(ctx context.Context, addr string, tlsCfg *tls.Config) (net.Conn, error) {
+	if tlsCfg != nil {
+		d := tls.Dialer{Config: tlsCfg}
+		return d.DialContext(ctx, "tcp", addr)
+	}
+	var d net.Dialer
+	return d.DialContext(ctx, "tcp", addr)
+}
+
+// handshake writes "HELLO 1 [AUTH <token>]" and reads the server's
+// response directly (before readLoop owns c.r). It returns ErrHandshake
+// (wrapping ErrAuth on an AUTH rejection) on any failure.
+func (c *Client) handshake(token string) error {
+	line := "HELLO 1\n"
+	if token != "" {
+		line = "HELLO 1 AUTH " + token + "\n"
+	}
+	if _, err := c.w.WriteString(line); err != nil {
+		return fmt.Errorf("%w: write HELLO: %w", ErrTransport, err)
+	}
+	if err := c.w.Flush(); err != nil {
+		return fmt.Errorf("%w: flush HELLO: %w", ErrTransport, err)
+	}
+
+	resp, err := c.r.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("%w: read HELLO response: %w", ErrTransport, err)
+	}
+	resp = strings.TrimRight(resp, "\r\n")
+
+	if resp == "HELLO 1 OK" {
+		return nil
+	}
+	// ERR <code> <reason>
+	if rest, ok := strings.CutPrefix(resp, "ERR "); ok {
+		code, reason, _ := strings.Cut(rest, " ")
+		if code == "AUTH" {
+			return fmt.Errorf("%w: %w: %s", ErrHandshake, ErrAuth, reason)
+		}
+		return fmt.Errorf("%w: %s %s", ErrHandshake, code, reason)
+	}
+	return fmt.Errorf("%w: unexpected response %q", ErrHandshake, resp)
 }
 
 // readLoop reads frames until the connection dies, then closes the

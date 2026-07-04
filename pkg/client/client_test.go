@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"net"
@@ -10,8 +11,11 @@ import (
 )
 
 // acceptOne starts a listener on 127.0.0.1:0, accepts exactly one
-// connection in the background, and closes it immediately. Returns
-// the listener address and a cleanup func.
+// connection in the background, answers the HELLO handshake (so Dial
+// succeeds), and then closes it. Returns the listener address and a
+// cleanup func. The buffered "HELLO 1 OK" is delivered before EOF, so
+// the client's handshake read completes and readLoop then sees EOF —
+// exactly the lifecycle these tests exercise.
 func acceptOne(t *testing.T) (addr string, cleanup func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -25,6 +29,9 @@ func acceptOne(t *testing.T) (addr string, cleanup func()) {
 		if err != nil {
 			return
 		}
+		br := bufio.NewReader(conn)
+		_, _ = br.ReadString('\n') // consume the client's HELLO line
+		_, _ = conn.Write([]byte("HELLO 1 OK\n"))
 		_ = conn.Close()
 	}()
 	return ln.Addr().String(), func() {
