@@ -18,6 +18,8 @@ func runPub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	addr := fs.String("addr", config.DefaultAddr, "broker address")
 	key := fs.String("key", "", "dedupe key (optional)")
+	routingKey := fs.String("routing-key", "", "partition routing key (hashed to a partition; optional)")
+	partition := fs.Int("partition", -1, "explicit target partition (>=0 pins it, overriding -routing-key)")
 	conn := registerConnFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: toymqctl pub [flags] <topic> <payload>")
@@ -31,6 +33,10 @@ func runPub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	topic, payload := fs.Arg(0), fs.Arg(1)
+	// An explicit -partition pins the target via the <topic>#<n> wire form.
+	if *partition >= 0 {
+		topic = fmt.Sprintf("%s#%d", topic, *partition)
+	}
 
 	opts, err := conn.dialOptions()
 	if err != nil {
@@ -47,7 +53,7 @@ func runPub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	defer c.Close()
 
-	id, dup, err := c.Pub(ctx, topic, *key, []byte(payload))
+	id, dup, err := c.Pub(ctx, topic, *key, *routingKey, []byte(payload))
 	if err != nil {
 		fmt.Fprintf(stderr, "toymqctl pub: %v\n", err)
 		return exitErr

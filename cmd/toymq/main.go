@@ -80,7 +80,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	syncMode, _ := wal.ParseSyncMode(cfg.FsyncMode)
 	syncCfg := broker.SyncConfig{Mode: syncMode, Interval: cfg.FsyncInterval}
 
-	b, err := broker.NewWithObservability(cfg.DataDir, cfg.DedupeCap, 30*time.Second, 1*time.Second, syncCfg, mtr, tp.Tracer())
+	b, err := broker.NewWithObservability(cfg.DataDir, cfg.DedupeCap, cfg.DefaultPartitions, 30*time.Second, 1*time.Second, syncCfg, mtr, tp.Tracer())
 	if err != nil {
 		return fmt.Errorf("broker: %w", err)
 	}

@@ -26,7 +26,9 @@ func runProducer(ctx context.Context, c *client.Client, topic string,
 			return out
 		}
 		start := time.Now()
-		_, _, err := c.Pub(ctx, topic, "", payload)
+		// Empty routing key → the broker round-robins across partitions,
+		// so a multi-partition topic spreads load without a per-message key.
+		_, _, err := c.Pub(ctx, topic, "", "", payload)
 		if err != nil {
 			out.pubErrs++
 			continue

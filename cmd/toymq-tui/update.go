@@ -49,8 +49,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case msgArrivedMsg:
 		d := msg.d
 		m.lastDelivery = &d
-		m.log(fmt.Sprintf("MSG topic=%s id=%d payload=%q",
-			d.Topic, d.MsgID, string(d.Payload)))
+		m.log(fmt.Sprintf("MSG topic=%s partition=%d id=%d payload=%q",
+			d.Topic, d.Partition, d.MsgID, string(d.Payload)))
 		var cmds []tea.Cmd
 		if m.autoAck {
 			cmds = append(cmds, ackCmd(m.ctx, d))
