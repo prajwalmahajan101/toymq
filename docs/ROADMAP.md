@@ -142,20 +142,31 @@ Branch convention: `feat/<milestone-slug>`.
 - **Exit:** broker safely reachable off-host; raw line-oriented scripts get
   the one-line `HELLO 1` prepend recipe in the README.
 
-## v2 M4 — Partitions (single-node)
-**Branch:** `feat/partitions`
-- A topic can be created with `N` partitions. `PUB <topic> <key> <payload>`
-  hashes `key` to a partition; explicit `PUB <topic>#<partition> ...`
-  is also accepted.
-- One WAL segment file per `(topic, partition)`; offsets file extended.
-- Consumers subscribe to a partition (or `<topic>#*` for all).
-- New ADR for the segment layout — preserves the current single-WAL
-  default (1 partition = today's behaviour).
-- **Owned risk test:** concurrent stress — N producers fan out across
-  partitions while M consumers subscribe; verify per-partition ordering
-  and zero cross-partition leakage under `-race`.
-- **Exit:** README "Throughput" section shows linear scaling up to GOMAXPROCS;
-  TUI partition view.
+## v2 M4 — Partitions (single-node) ✅ *(shipped)*
+**Branch:** `feat/partitions` · **ADR:** [0021](./adr/0021-partitions-single-node.md)
+- A topic holds `N` partitions, each an independent ordered log.
+  **`Topic` became a thin router over a new `Partition` type** that owns
+  the WAL, dedupe LRU, consumers, and offsets — MsgID stays monotonic
+  *per partition* (the ordering guarantee), with no cross-partition order.
+- **Two ways to set the count:** `--default-partitions N` for auto-created
+  topics **and** an explicit `CREATE <topic> PARTITIONS <n>` verb /
+  `toymqctl create`. Count is fixed at creation.
+- **`PUB` carries a routing key distinct from the dedupe key:** an explicit
+  `<topic>#<n>` wins; else the routing key hashes (`fnv1a % N`); else the
+  keyless publish round-robins. `SUB <topic>` / `<topic>#*` = all partitions
+  (fan-in), `<topic>#<n>` = one. `MSG`/`ACK`/`NACK` gained a partition field.
+- One WAL per `(topic, partition)`: `topics/<name>/<p>/000000.log` + `meta.json`
+  for N>1; **1-partition topics keep the pre-M4 flat layout byte-for-byte**
+  (no `meta.json`, WAL at the topic root), so old data dirs recover unchanged.
+- **Owned risk test (shipped):** `TestAllPartitionsFanIn` — producers fan
+  across partitions while a `#*` consumer reads all; asserts per-partition
+  MsgID monotonicity, exact per-partition counts, and zero cross-partition
+  leakage under `-race`. Plus routing-key determinism across restart,
+  per-partition offset persistence, and flat-layout back-compat.
+- **Wire:** breaking (PUB/MSG/ACK/NACK arity, new CREATE) — gated behind the
+  v2.0 major bump; ADR 0021 supersedes the ADR 0001 frames it touches.
+- **Exit:** bench gains `-partitions N` (keyless publishes round-robin to
+  spread load); `toymqctl create` / `pub -routing-key` / `sub <topic>#*`.
 
 ## v2 M5 — Reader backpressure + flow control
 **Branch:** `feat/flow-control`
@@ -213,7 +224,7 @@ Branch convention: `feat/<milestone-slug>`.
 | v2 M1 | Dedupe LRU persistence | ✅ | [#5](https://github.com/prajwalmahajan101/toymq/pull/5) | — |
 | v2 M2 | Batched-fsync mode | ✅ | [#7](https://github.com/prajwalmahajan101/toymq/pull/7) | — |
 | v2 M3 | HELLO + AUTH + TLS | ✅ | [#9](https://github.com/prajwalmahajan101/toymq/pull/9) | — |
-| v2 M4 | Partitions (single-node) | ⬜ | — | — |
+| v2 M4 | Partitions (single-node) | ✅ | — | — |
 | v2 M5 | Reader backpressure | ⬜ | — | — |
 | v2 M6 | Retention + DLQ + delay | ⬜ | — | — |
 | v2 M7 | traceparent + alerts | ⬜ | — | — |
