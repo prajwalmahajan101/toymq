@@ -31,6 +31,11 @@ type benchConfig struct {
 	Producers int
 	Msgs      int
 	Size      int
+	// Fsync labels the run with the broker's WAL durability mode
+	// (per-message|batched|none). The bench is a client and cannot set
+	// the broker's mode; this is a record so per-message vs batched runs
+	// are self-documenting and tabulatable (the README batched column).
+	Fsync string
 }
 
 func main() {
@@ -99,6 +104,7 @@ func parseFlags(args []string, stderr io.Writer) (benchConfig, int) {
 	fs.IntVar(&cfg.Producers, "producers", 4, "concurrent producer goroutines")
 	fs.IntVar(&cfg.Msgs, "msgs", 10000, "total messages across all producers")
 	fs.IntVar(&cfg.Size, "size", 256, "payload byte size")
+	fs.StringVar(&cfg.Fsync, "fsync", "per-message", "label the run with the broker's fsync mode: per-message|batched|none")
 
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: toymq-bench [flags]")
