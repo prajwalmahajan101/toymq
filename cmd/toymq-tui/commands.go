@@ -13,7 +13,7 @@ func pubCmd(ctx context.Context, c *client.Client, topic, dedupe, payload string
 	return func() tea.Msg {
 		callCtx, cancel := context.WithTimeout(ctx, opTimeout)
 		defer cancel()
-		id, dup, err := c.Pub(callCtx, topic, dedupe, []byte(payload))
+		id, dup, err := c.Pub(callCtx, topic, dedupe, "", []byte(payload))
 		return pubResultMsg{topic: topic, msgID: id, dup: dup, err: err}
 	}
 }

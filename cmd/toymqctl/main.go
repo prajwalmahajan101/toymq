@@ -28,6 +28,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
+	case "create":
+		return runCreate(ctx, rest, stdout, stderr)
 	case "pub":
 		return runPub(ctx, rest, stdout, stderr)
 	case "sub":
@@ -48,8 +50,9 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: toymqctl <command> [flags] <args...>
 
 Commands:
+  create <topic>                  create a topic (use -partitions N)
   pub <topic> <payload>           publish a message
-  sub <topic> <consumer-id>       subscribe and stream messages
+  sub <topic> <consumer-id>       subscribe and stream messages (topic#n or topic#* to scope)
   ack <topic> <consumer-id> <id>  acknowledge one message id
 
 Run "toymqctl <command> -h" for command-specific flags.

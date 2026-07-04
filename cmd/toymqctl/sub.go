@@ -19,7 +19,7 @@ func runSub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	maxMsgs := fs.Int("max-msgs", 0, "exit after N messages (0 = unbounded)")
 	conn := registerConnFlags(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: toymqctl sub [flags] <topic> <consumer-id>")
+		fmt.Fprintln(stderr, "usage: toymqctl sub [flags] <topic|topic#n|topic#*> <consumer-id>")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -65,8 +65,8 @@ func runSub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 				}
 				return exitOK
 			}
-			fmt.Fprintf(stdout, "MSG topic=%s id=%d payload=%q\n",
-				d.Topic, d.MsgID, d.Payload)
+			fmt.Fprintf(stdout, "MSG topic=%s partition=%d id=%d payload=%q\n",
+				d.Topic, d.Partition, d.MsgID, d.Payload)
 			if !*noAutoAck {
 				if err := d.Ack(ctx); err != nil {
 					if errors.Is(err, context.Canceled) {

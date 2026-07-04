@@ -31,6 +31,11 @@ type benchConfig struct {
 	Producers int
 	Msgs      int
 	Size      int
+	// Partitions, when > 1, is created on the topic before the run so
+	// keyless publishes round-robin across partitions (ADR 0021). The
+	// report labels the run so partitioned vs single-log runs are
+	// self-documenting.
+	Partitions int
 	// Fsync labels the run with the broker's WAL durability mode
 	// (per-message|batched|none). The bench is a client and cannot set
 	// the broker's mode; this is a record so per-message vs batched runs
@@ -97,6 +102,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}()
 
+	// Create the topic with the requested partition count before producing
+	// so keyless publishes round-robin across partitions.
+	if cfg.Partitions > 1 {
+		createCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+		err := clients[0].Create(createCtx, cfg.Topic, cfg.Partitions)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(stderr, "toymq-bench: create topic: %v\n", err)
+			return exitErr
+		}
+	}
+
 	per := distribute(cfg.Msgs, cfg.Producers)
 	payload := makePayload(cfg.Size)
 	results := make([]result, cfg.Producers)
@@ -131,6 +148,7 @@ func parseFlags(args []string, stderr io.Writer) (benchConfig, int) {
 	fs.IntVar(&cfg.Producers, "producers", 4, "concurrent producer goroutines")
 	fs.IntVar(&cfg.Msgs, "msgs", 10000, "total messages across all producers")
 	fs.IntVar(&cfg.Size, "size", 256, "payload byte size")
+	fs.IntVar(&cfg.Partitions, "partitions", 1, "create the topic with N partitions before the run (>=1)")
 	fs.StringVar(&cfg.Fsync, "fsync", "per-message", "label the run with the broker's fsync mode: per-message|batched|none")
 	fs.StringVar(&cfg.AuthToken, "auth-token", "", "bearer token sent in the HELLO handshake")
 	fs.BoolVar(&cfg.TLS, "tls", false, "dial over TLS")
