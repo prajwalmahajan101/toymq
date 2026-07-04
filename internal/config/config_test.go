@@ -36,6 +36,12 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.FsyncInterval != DefaultFsyncInterval {
 		t.Errorf("FsyncInterval = %v, want %v", cfg.FsyncInterval, DefaultFsyncInterval)
 	}
+	if !cfg.RequireHello {
+		t.Error("RequireHello default = false, want true")
+	}
+	if cfg.AuthTokenFile != "" || cfg.TLSAddr != "" || cfg.TLSCert != "" || cfg.TLSKey != "" {
+		t.Error("auth/TLS defaults should be empty")
+	}
 }
 
 func TestParseOverrides(t *testing.T) {
@@ -96,6 +102,9 @@ func TestParseValidation(t *testing.T) {
 		{"bad fsync mode", []string{"-fsync", "sometimes"}, "fsync"},
 		{"batched zero interval", []string{"-fsync", "batched", "-fsync-interval", "0"}, "fsync-interval"},
 		{"batched negative interval", []string{"-fsync", "batched", "-fsync-interval", "-1ms"}, "fsync-interval"},
+		{"cert without key", []string{"-tls-cert", "c.pem"}, "tls-cert and tls-key"},
+		{"key without cert", []string{"-tls-key", "k.pem"}, "tls-cert and tls-key"},
+		{"tls-addr without cert", []string{"-tls-addr", ":6790"}, "tls-addr requires"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
