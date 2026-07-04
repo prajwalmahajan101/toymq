@@ -75,7 +75,7 @@ func TestSessionPubOK(t *testing.T) {
 
 	br := bufio.NewReader(clientConn)
 	go func() {
-		clientConn.Write([]byte("PUB orders - 5\nhello\n"))
+		clientConn.Write([]byte("PUB orders - - 5\nhello\n"))
 	}()
 
 	line := readLine(t, br)
@@ -99,8 +99,8 @@ func TestSessionPubDup(t *testing.T) {
 
 	br := bufio.NewReader(clientConn)
 	go func() {
-		clientConn.Write([]byte("PUB orders key1 5\nhello\n"))
-		clientConn.Write([]byte("PUB orders key1 5\nhello\n"))
+		clientConn.Write([]byte("PUB orders key1 - 5\nhello\n"))
+		clientConn.Write([]byte("PUB orders key1 - 5\nhello\n"))
 	}()
 
 	first := readLine(t, br)
@@ -125,7 +125,7 @@ func TestSessionSubMsgAck(t *testing.T) {
 	br := bufio.NewReader(clientConn)
 
 	// Pre-publish a message directly through the broker so the SUB sees backlog.
-	if _, _, err := b.Publish("orders", "", []byte("hi")); err != nil {
+	if _, _, _, err := b.Publish("orders", "", "", 0, false, []byte("hi")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
@@ -148,11 +148,11 @@ func TestSessionSubMsgAck(t *testing.T) {
 		t.Fatalf("payload got %q want hi", payload)
 	}
 
-	// ACK it.
+	// ACK it. MSG header is "MSG orders <partition> <msgID> <len>".
 	parts := strings.Fields(msgHeader)
-	msgID := parts[2]
+	msgID := parts[3]
 	go func() {
-		clientConn.Write([]byte("ACK c1 " + msgID + "\n"))
+		clientConn.Write([]byte("ACK c1 0 " + msgID + "\n"))
 	}()
 
 	ack := readLine(t, br)
@@ -176,7 +176,7 @@ func TestSessionSubMsgNack(t *testing.T) {
 
 	br := bufio.NewReader(clientConn)
 
-	if _, _, err := b.Publish("orders", "", []byte("hi")); err != nil {
+	if _, _, _, err := b.Publish("orders", "", "", 0, false, []byte("hi")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
@@ -196,7 +196,7 @@ func TestSessionSubMsgNack(t *testing.T) {
 	if payload := readLine(t, br); payload != "hi" {
 		t.Fatalf("payload got %q want hi", payload)
 	}
-	msgID := strings.Fields(msgHeader)[2]
+	msgID := strings.Fields(msgHeader)[3]
 
 	// NACK it. Three lines come back in some order: the redelivered
 	// MSG header + payload, and the OK ack for the NACK command.
@@ -205,13 +205,13 @@ func TestSessionSubMsgNack(t *testing.T) {
 	// so the writer picks the MSG up first — but the test reads all
 	// three lines and asserts content rather than strict ordering.
 	go func() {
-		clientConn.Write([]byte("NACK c1 " + msgID + "\n"))
+		clientConn.Write([]byte("NACK c1 0 " + msgID + "\n"))
 	}()
 	lines := []string{readLine(t, br), readLine(t, br), readLine(t, br)}
 	var sawMSG, sawPayload, sawOK bool
 	for _, l := range lines {
 		switch {
-		case strings.HasPrefix(l, "MSG orders "+msgID):
+		case strings.HasPrefix(l, "MSG orders 0 "+msgID):
 			sawMSG = true
 		case l == "hi":
 			sawPayload = true
@@ -239,7 +239,7 @@ func TestSessionNackBeforeSub(t *testing.T) {
 
 	br := bufio.NewReader(clientConn)
 	go func() {
-		clientConn.Write([]byte("NACK c1 0\n"))
+		clientConn.Write([]byte("NACK c1 0 0\n"))
 	}()
 	line := readLine(t, br)
 	if !strings.HasPrefix(line, "ERR NO_SUB") {
@@ -261,7 +261,7 @@ func TestSessionAckUnknownMsg(t *testing.T) {
 	// SUB first so currentTopic is set, then ACK a msgID never delivered.
 	go func() {
 		clientConn.Write([]byte("SUB orders c1\n"))
-		clientConn.Write([]byte("ACK c1 999\n"))
+		clientConn.Write([]byte("ACK c1 0 999\n"))
 	}()
 	if sub := readLine(t, br); sub != "OK 0" {
 		t.Fatalf("SUB resp got %q", sub)
@@ -284,7 +284,7 @@ func TestSessionNackUnknownMsg(t *testing.T) {
 	br := bufio.NewReader(clientConn)
 	go func() {
 		clientConn.Write([]byte("SUB orders c1\n"))
-		clientConn.Write([]byte("NACK c1 999\n"))
+		clientConn.Write([]byte("NACK c1 0 999\n"))
 	}()
 	if sub := readLine(t, br); sub != "OK 0" {
 		t.Fatalf("SUB resp got %q", sub)
@@ -306,7 +306,7 @@ func TestSessionPubBrokerFailure(t *testing.T) {
 
 	br := bufio.NewReader(clientConn)
 	go func() {
-		clientConn.Write([]byte("PUB blocked - 5\nhello\n"))
+		clientConn.Write([]byte("PUB blocked - - 5\nhello\n"))
 	}()
 	line := readLine(t, br)
 	if !strings.HasPrefix(line, "ERR PUB_FAILED") {
@@ -344,7 +344,7 @@ func TestSessionAckBeforeSub(t *testing.T) {
 
 	br := bufio.NewReader(clientConn)
 	go func() {
-		clientConn.Write([]byte("ACK c1 0\n"))
+		clientConn.Write([]byte("ACK c1 0 0\n"))
 	}()
 	line := readLine(t, br)
 	if !strings.HasPrefix(line, "ERR NO_SUB") {
@@ -415,7 +415,7 @@ func TestHandshakeRequiredAcceptsHello(t *testing.T) {
 	done := runSessionAuth(t, t.Context(), b, serverConn, authConfig{requireHello: true})
 
 	br := bufio.NewReader(clientConn)
-	go clientConn.Write([]byte("HELLO 1\nPUB orders - 5\nhello\n"))
+	go clientConn.Write([]byte("HELLO 1\nPUB orders - - 5\nhello\n"))
 
 	if line := readLine(t, br); line != "HELLO 1 OK" {
 		t.Fatalf("handshake resp = %q, want HELLO 1 OK", line)
@@ -433,7 +433,7 @@ func TestHandshakeRequiredRejectsMissingHello(t *testing.T) {
 	done := runSessionAuth(t, t.Context(), b, serverConn, authConfig{requireHello: true})
 
 	br := bufio.NewReader(clientConn)
-	go clientConn.Write([]byte("PUB orders - 5\nhello\n"))
+	go clientConn.Write([]byte("PUB orders - - 5\nhello\n"))
 
 	line := readLine(t, br)
 	if !strings.HasPrefix(line, "ERR HELLO") {
@@ -511,7 +511,7 @@ func TestHandshakeCompatModeAllowsCommandFirst(t *testing.T) {
 	done := runSessionAuth(t, t.Context(), b, serverConn, authConfig{requireHello: false})
 
 	br := bufio.NewReader(clientConn)
-	go clientConn.Write([]byte("PUB orders - 5\nhello\n"))
+	go clientConn.Write([]byte("PUB orders - - 5\nhello\n"))
 	if line := readLine(t, br); !strings.HasPrefix(line, "OK ") {
 		t.Fatalf("compat PUB resp = %q, want OK", line)
 	}
