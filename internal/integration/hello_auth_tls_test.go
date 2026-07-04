@@ -124,7 +124,7 @@ func TestHelloAuthTLSMatrix(t *testing.T) {
 					t.Fatalf("Dial: unexpected error: %v", err)
 				}
 				defer c.Close()
-				id, dup, perr := c.Pub(ctx, "orders", "k1", []byte("payload"))
+				id, dup, perr := c.Pub(ctx, "orders", "k1", "", []byte("payload"))
 				if perr != nil {
 					t.Fatalf("Pub: %v", perr)
 				}
@@ -179,8 +179,8 @@ func TestRequireHelloFalseCompat(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// No HELLO — straight to PUB, the pre-M3 wire.
-	go func() { conn.Write([]byte("PUB orders - 5\nhello\n")) }()
+	// No HELLO — straight to PUB (dedupe-key routing-key both "-").
+	go func() { conn.Write([]byte("PUB orders - - 5\nhello\n")) }()
 	br := bufio.NewReader(conn)
 	line, err := br.ReadString('\n')
 	if err != nil {

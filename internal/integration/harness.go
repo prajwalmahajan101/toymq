@@ -29,6 +29,7 @@ type harnessOpts struct {
 	dedupeCap         int
 	visibility        time.Duration
 	redeliverInterval time.Duration
+	defaultPartitions int
 	dataDir           string
 }
 
@@ -40,6 +41,12 @@ func withVisibility(d time.Duration) harnessOpt {
 
 func withRedeliverInterval(d time.Duration) harnessOpt {
 	return func(o *harnessOpts) { o.redeliverInterval = d }
+}
+
+// withDefaultPartitions makes auto-created topics use n partitions (ADR
+// 0021). Tests that need explicit per-topic counts can send CREATE instead.
+func withDefaultPartitions(n int) harnessOpt {
+	return func(o *harnessOpts) { o.defaultPartitions = n }
 }
 
 type harness struct {
@@ -58,6 +65,7 @@ func startBroker(t *testing.T, opts ...harnessOpt) *harness {
 		dedupeCap:         defaultDedupeCap,
 		visibility:        defaultVisibility,
 		redeliverInterval: defaultRedeliverInterval,
+		defaultPartitions: 1,
 	}
 	for _, opt := range opts {
 		opt(&resolved)
@@ -85,9 +93,13 @@ func startBroker(t *testing.T, opts ...harnessOpt) *harness {
 
 func buildHarness(t *testing.T, opts harnessOpts) *harness {
 	t.Helper()
-	b, err := broker.NewWithTimings(opts.dataDir, opts.dedupeCap, opts.visibility, opts.redeliverInterval)
+	parts := opts.defaultPartitions
+	if parts < 1 {
+		parts = 1
+	}
+	b, err := broker.NewWithTimingsPartitions(opts.dataDir, opts.dedupeCap, parts, opts.visibility, opts.redeliverInterval)
 	if err != nil {
-		t.Fatalf("broker.NewWithTimings: %v", err)
+		t.Fatalf("broker.NewWithTimingsPartitions: %v", err)
 	}
 
 	srv := server.New("127.0.0.1:0", b)

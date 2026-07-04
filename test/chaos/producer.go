@@ -107,7 +107,7 @@ func (p *producer) run(ctx context.Context) {
 		}
 
 		key := fmt.Sprintf("chaos-%d", nextKey)
-		id, dup, err := c.Pub(ctx, p.topic, key, p.payload)
+		id, dup, err := c.Pub(ctx, p.topic, key, "", p.payload)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return
