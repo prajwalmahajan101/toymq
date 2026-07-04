@@ -165,7 +165,7 @@ func TestRunClientRoundTrip(t *testing.T) {
 	}
 
 	// Default posture requires the HELLO handshake (ADR 0020).
-	go func() { conn.Write([]byte("HELLO 1\nPUB orders - 5\nhello\n")) }()
+	go func() { conn.Write([]byte("HELLO 1\nPUB orders - - 5\nhello\n")) }()
 	br := bufio.NewReader(conn)
 	hello, err := br.ReadString('\n')
 	if err != nil {
