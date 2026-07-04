@@ -71,8 +71,8 @@ possible; one breaking bump (HELLO frame) gated by major version.
 
 Branch convention: `feat/<milestone-slug>`.
 
-## v2 M1 — Dedupe LRU persistence
-**Branch:** `feat/dedupe-persistence` · **ADR:** [0018](./adr/0018-dedupe-recovery-from-wal.md)
+## v2 M1 — Dedupe LRU persistence ✅ *(shipped — [PR #5](https://github.com/prajwalmahajan101/toymq/pull/5))*
+**Branch:** `feat/dedupe-persistence` (merged) · **ADR:** [0018](./adr/0018-dedupe-recovery-from-wal.md)
 - **Approach chosen: rebuild the LRU from the WAL, not a sidecar file.**
   The WAL already stores every `DedupeKey` and already scans every record
   on `Open`; a sidecar `dedupe.json` would lag the WAL by its debounce
@@ -199,7 +199,7 @@ Branch convention: `feat/<milestone-slug>`.
 
 | Milestone | Title | Status | PR | Tag |
 |---|---|---|---|---|
-| v2 M1 | Dedupe LRU persistence | 🔄 branch | — | — |
+| v2 M1 | Dedupe LRU persistence | ✅ | [#5](https://github.com/prajwalmahajan101/toymq/pull/5) | — |
 | v2 M2 | Batched-fsync mode | ⬜ | — | — |
 | v2 M3 | HELLO + AUTH + TLS | ⬜ | — | — |
 | v2 M4 | Partitions (single-node) | ⬜ | — | — |
@@ -221,19 +221,147 @@ existing as an independently released library. Only attempt if
 Branch convention: `feat/<milestone-slug>`. Each milestone owns the
 crash / partition / consensus tests for the surface it introduces.
 
+## toyraft readiness — upstream prerequisites (gate for v3)
+
+Integration-readiness audit of `toyraft` (2026-07-04) against the v3
+milestones. The Raft **engine is embeddable today**: `raft.New(Config)`
+behind a frozen `Node` API (`Start`/`Stop`/`Propose`/`Step`/`Status`),
+`Propose` blocks until *applied* (not just committed), a production
+durable log (`pkg/storage/file.New`), a production HTTP peer transport
+(`pkg/transport/http.New`), leader redirects, and a copy-paste wiring
+blueprint in `cmd/toyraftd/main.go`. Conformance suites
+(`storagetest.RunConformance`, `transporttest.RunConformance`) let toymq
+validate any impls it swaps in.
+
+Three capabilities a durable, elastic broker needs are **stubbed or
+absent in toyraft** and must land upstream (or be designed around) before
+the dependent milestone can meet its exit criteria:
+
+| toyraft gap | State today | Blocks | Resolution |
+|---|---|---|---|
+| **Snapshots / log compaction** | Stub — `Snapshot`/`Restore` return `ErrSnapshotUnsupported` at every layer (kvsm, storage/file, storage/memory); `FirstIndex()` hardcoded to `1`; no `InstallSnapshot` message. The Raft log **grows unbounded** (toyraft PRD non-goal). | **v3 M1** (its crash matrix lists "kill during snapshot transfer" — impossible today) and any long-running cluster (disk fills). | Land snapshot + compaction upstream — `ErrCompacted` / `snapshotIndex+1` are already reserved v2 hooks, so no API break. Until then, v3 M1 **drops the snapshot-transfer case** and segment size is capped operationally. |
+| **Runtime membership changes** | Absent — no `AddNode` / `RemoveNode` / `ConfChange` / joint consensus anywhere; `Config.Peers` is **fixed at startup**. | **v3 M3** (`CLUSTER ADD/REMOVE`, rolling-churn test). | Add single-server reconfiguration (or joint consensus) upstream. v3 M3 cannot start until it exists. |
+| **Follower / linearizable reads** | Absent — leader-only reads, **no ReadIndex/lease**; a just-elected leader can serve a slightly stale read. Reference 307-redirects every read to the leader. | **v3 M5** (bounded-staleness follower reads) and the strong-read half of **v3 M2**. | Add ReadIndex (+ optional lease) upstream; the `MAXLAG` freshness contract layers on top. |
+
+Softer integration items — toymq owns these, **no toyraft change required**:
+
+- **Async transport wrapper.** toyraft calls `Transport.Send`
+  synchronously inside the tick loop, so a frozen peer stalls heartbeats.
+  The fix (`cmd/toyraftd/asynctransport.go`, a per-peer buffered drain) is
+  **daemon code, not a library export** — toymq copies it (or we promote
+  it upstream). Effectively required for N≥5 liveness. Owned by v3 M1.
+- **Odd cluster size.** `Config.Peers` must be odd (even N is rejected) —
+  toymq cluster docs say 3 / 5 / 7, never 2 or 4.
+- **Peer-plane TLS/auth.** Inter-node traffic is plaintext; v2 M3's TLS
+  covers only the client plane. Secure multi-host needs peer-plane TLS
+  (upstream, or a toymq transport wrapper).
+- **Multi-Raft for partitions.** toyraft is single-group. v3 M4
+  (per-partition leaders) means one `Node` per `(topic, partition)` — many
+  independent Raft groups. toyraft runs many `Node` instances fine but
+  offers no group multiplexing; toymq owns the fan-out and the shared
+  `/raft/message` demux.
+
+**Sequencing consequence:** v3 M1 and v3 M2 are buildable on toyraft **as
+it stands today** (minus the snapshot-transfer crash case). **v3 M3 and v3
+M5 are upstream-blocked** — marked ⛔ in the status table. v3 M4 is
+buildable but carries the multi-Raft design cost. These upstream items are
+tracked as `toyraft` issues, not toymq milestones — toymq's v3 depends on
+their release the same way it depends on toyraft existing at all.
+
+### Upstream work items (detailed) — land in `toyraft` first
+
+These are `toyraft`-side deliverables. Each preserves the frozen public
+API (append-only message types, reserved storage hooks) so it lands
+without a breaking change to the `Node`/`StateMachine`/`Storage`
+interfaces already in use.
+
+#### UP-1 — Snapshots + log compaction *(unblocks v3 M1 snapshot case + bounds disk)*
+- **toyraft API:** make `StateMachine.Snapshot() ([]byte, Index, error)` /
+  `Restore([]byte) error` real (stop returning `ErrSnapshotUnsupported`).
+  Add `MsgInstallSnapshot` as the next append-only `MessageType` (values
+  `0..3` are taken; use `4`) plus the leader→follower snapshot-transfer
+  path in the driver. Implement `Storage.Snapshot`/`Restore`; make
+  `FirstIndex()` return `snapshotIndex+1` (today hardcoded to `1`) and
+  have `Entries`/`Term` return the already-reserved `ErrCompacted` below
+  the compaction floor.
+- **Compaction trigger:** new `Config.SnapshotThreshold` (entries since
+  last snapshot, e.g. 10 000). Leader snapshots the SM, truncates the log
+  prefix, and ships the snapshot to any follower whose `nextIndex`
+  precedes the floor.
+- **toymq consumption:** the broker's `Snapshot` serialises its
+  materialised state (per-topic WAL offsets + dedupe LRU, or a WAL-segment
+  reference); `Restore` rebuilds through the ADR 0018 `rebuildIndexes`
+  seam. This is exactly why M1 chose WAL-rebuild over a sidecar.
+- **toyraft tests:** `storagetest` gains compaction invariants; new
+  driver tests for snapshot round-trip, `InstallSnapshot` to a lagging
+  follower, and restart-from-snapshot.
+
+#### UP-2 — Runtime membership changes *(unblocks v3 M3)*
+- **toyraft API:** single-server reconfiguration (add-one / remove-one —
+  the correct, simpler subset of Raft §6). `Node.AddNode(ctx, NodeID,
+  addr)` / `Node.RemoveNode(ctx, NodeID)`, returning after the config
+  entry commits. Add a `ConfChange` entry kind (a reserved `Entry`
+  discriminator applied to the **core's own peer set**, never the user
+  SM). Persist the active configuration alongside `HardState` so it
+  survives restart. Enforce **one in-flight change at a time**; run quorum
+  math on the committed config; handle leader-removes-self (step down
+  after the change commits).
+- **toymq consumption:** `CLUSTER ADD <addr>` / `CLUSTER REMOVE <id>` map
+  to `AddNode`/`RemoveNode`; `INFO replication` reads `Status()` + the
+  active config for role / leader / peers / lag.
+- **toyraft tests:** add & remove under sustained write load, leader
+  self-removal step-down, node rejoin after restart using the persisted
+  config, and a rejected concurrent-change assertion.
+
+#### UP-3 — ReadIndex / lease reads *(unblocks v3 M5 + the strong-read half of v3 M2)*
+- **toyraft API:** `Node.ReadIndex(ctx) (Index, error)` — confirms the
+  node is still leader via a heartbeat round (or an optional clock-bound
+  leader lease gated by a new `Config.LeaderLease`), and returns the
+  commit index the caller must have applied before serving a linearizable
+  read. No log entry is appended.
+- **toymq consumption:** leader linearizable reads call `ReadIndex` then
+  wait for `Status().ApplyIndex >= idx` before answering. Followers
+  compare their `ApplyIndex` lag against the `SUB ... MAXLAG <ms>` bound
+  and either serve locally or return `MOVED <leader>`.
+- **toyraft tests:** partitioned stale leader must **fail** `ReadIndex`
+  (no stale linearizable read), lease-expiry correctness, and
+  read-your-writes under partition churn.
+
+> Tracking: open these as `toyraft` issues/roadmap entries (UP-1..UP-3).
+> toymq v3 M1/M2 proceed against current toyraft; M3 waits on UP-2, M5 on
+> UP-3, and M1's snapshot-transfer crash case on UP-1.
+
 ## v3 M1 — Embed toyraft; pick the WAL ↔ Raft-log invariant
 **Branch:** `feat/toyraft-embed`
-- Vendor / import `github.com/prajwalmahajan101/toyraft`.
+- Import `github.com/prajwalmahajan101/toyraft`.
 - **Pick once, ADR it:** is the **Raft log** the durability source of
   truth (WAL becomes a snapshot device), or is **WAL** still
   authoritative and Raft just replicates entries? Reference toykv ADR
   on the same question. Default proposal: Raft log is the source of
   truth; WAL = local materialised view + snapshot artefact.
-- `toymq --replicate --peers <list>` for 3-node clusters; single mode
-  preserved by default (no peers → today's behaviour, byte-for-byte).
+- **toyraft wiring (blueprint: `cmd/toyraftd/main.go`):** implement
+  `raft.StateMachine` on the broker — `Apply(Entry)` = WAL append +
+  offset/dedupe advance, deterministic and wall-clock-free (see the
+  determinism note below); `Snapshot`/`Restore` return
+  `ErrSnapshotUnsupported` until the upstream snapshot gate lands. Wire
+  `pkg/storage/file` (or a WAL-backed `Storage`), `pkg/transport/http`
+  (peer plane), and copy the **async transport wrapper** from
+  `cmd/toyraftd/asynctransport.go` (required for liveness). Stand up a
+  **second** listener for the peer/consensus plane, separate from the
+  existing producer/consumer client plane; leader-gate writes and
+  307/`MOVED`-redirect non-leaders to the leader's client address.
+- **Determinism prerequisite (from v2 M1 / ADR 0018):** `topic.go`'s
+  `TsNs = time.Now()` and the local `MsgID` counter must move to the
+  **proposer** and travel in the proposed command `Data` — `Apply` runs
+  on every node and must be byte-identical. This is the first task of M1.
+- `toymq --replicate --peers <list>` for 3/5/7-node clusters (odd N —
+  toyraft rejects even N); single mode preserved by default (no peers →
+  today's behaviour, byte-for-byte).
 - **Owned risk test:** crash matrix — kill the leader mid-write, kill a
-  follower mid-replication, kill during snapshot transfer; verify every
-  acked PUB survives on the surviving quorum.
+  follower mid-replication; verify every acked PUB survives on the
+  surviving quorum. *(The "kill during snapshot transfer" case is
+  deferred until toyraft **UP-1** (snapshots) lands — snapshots are a
+  stub today; see prerequisites.)*
 - **Exit:** 3-node cluster passes the crash matrix; single-node mode is
   unchanged.
 
@@ -247,11 +375,19 @@ crash / partition / consensus tests for the surface it introduces.
 - **Owned risk test:** Jepsen-style linearizability harness on
   `PUB`/`ACK` under partition churn. Pass criterion: no acked PUB lost,
   no double-ack accepted as a unique consume.
+- **toyraft note:** write-side quorum via `Propose` (which blocks until
+  applied) works today. Strong *reads* need toyraft **UP-3** (ReadIndex/lease, shared with v3
+  M5) — until then a just-elected leader may serve a
+  slightly stale read; document this in the consistency model.
 - **Exit:** documented consistency model (`WAIT 0` = leader-local,
   `WAIT N/2+1` = strong); harness green.
 
-## v3 M3 — Cluster membership + discovery
+## v3 M3 — Cluster membership + discovery ⛔ *upstream-blocked*
 **Branch:** `feat/cluster-membership`
+- ⛔ **Blocked on toyraft:** requires runtime membership changes
+  (single-server reconfiguration) — absent today, `Config.Peers` is fixed
+  at startup. Blocked on toyraft **UP-2**; cannot start until it lands
+  (see prerequisites).
 - `CLUSTER NODES` / `CLUSTER ADD <addr>` / `CLUSTER REMOVE <id>` wire
   surface.
 - Bootstrap via static peers list or a single seed `--join <addr>`.
@@ -264,6 +400,11 @@ crash / partition / consensus tests for the surface it introduces.
 
 ## v3 M4 — Partition placement across nodes
 **Branch:** `feat/partition-placement`
+- ⚠️ **toyraft: multi-Raft.** Each `(topic, partition)` is its own Raft
+  group → one `toyraft.Node` per partition, all multiplexed over one
+  peer transport / `/raft/message` endpoint. toyraft runs many `Node`s
+  fine but provides no group multiplexing; toymq owns the fan-out,
+  per-group storage dirs, and the shared-transport demux.
 - Each `(topic, partition)` has a leader replica; placement balanced
   across the cluster.
 - Rebalance command: `CLUSTER REBALANCE` (manual at first; automatic
@@ -274,8 +415,11 @@ crash / partition / consensus tests for the surface it introduces.
 - **Exit:** linear throughput scaling across cluster size, demonstrated
   in `cmd/toymq-bench`.
 
-## v3 M5 — Follower reads with bounded staleness
+## v3 M5 — Follower reads with bounded staleness ⛔ *upstream-blocked*
 **Branch:** `feat/follower-reads`
+- ⛔ **Blocked on toyraft:** requires ReadIndex (+ optional leader lease)
+  — absent today (leader-only reads, no read barrier). Blocked on toyraft
+  **UP-3**; the `MAXLAG` contract layers on top (see prerequisites).
 - `SUB <topic> FROM <node-id> MAXLAG <ms>` — follower may serve reads
   if its lag is within the bound; otherwise redirects to leader.
 - New ADR — defines the freshness contract.
@@ -315,14 +459,20 @@ crash / partition / consensus tests for the surface it introduces.
 
 | Milestone | Title | Status | PR | Tag |
 |---|---|---|---|---|
-| v3 M1 | Embed toyraft + invariant ADR | ⬜ | — | — |
-| v3 M2 | Quorum acks + leader redirect | ⬜ | — | — |
-| v3 M3 | Cluster membership + discovery | ⬜ | — | — |
-| v3 M4 | Partition placement across nodes | ⬜ | — | — |
-| v3 M5 | Follower reads with bounded staleness | ⬜ | — | — |
+| v3 M1 | Embed toyraft + invariant ADR | ⬜ buildable now¹ | — | — |
+| v3 M2 | Quorum acks + leader redirect | ⬜ buildable now¹ | — | — |
+| v3 M3 | Cluster membership + discovery | ⛔ upstream-blocked² | — | — |
+| v3 M4 | Partition placement across nodes | ⬜ multi-Raft³ | — | — |
+| v3 M5 | Follower reads with bounded staleness | ⛔ upstream-blocked⁴ | — | — |
 | v3 M6 | Mirror maker | ⬜ | — | — |
 | v3 M7 | Push frames + keyspace events | ⬜ | — | — |
 | v3 M8 | Release v3.0.0 | ⬜ | — | `v3.0.0` |
+
+¹ On toyraft as it stands today (M1 minus the snapshot-transfer crash
+case). ² Needs upstream runtime membership changes. ³ Buildable, but
+carries the multi-Raft (one `Node` per partition) design cost. ⁴ Needs
+upstream ReadIndex/lease. See **toyraft readiness — upstream
+prerequisites** above.
 
 ### Out of scope even at v3
 
