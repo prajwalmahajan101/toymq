@@ -194,12 +194,15 @@ func (b *Broker) getOrCreateTopic(name string) (*Topic, error) {
 	}
 
 	topicDir := filepath.Join(b.dataDir, "topics", name)
-	log, err := wal.Open(topicDir)
+	dedupe := NewDedupeIndex(b.dedupeCap)
+	log, err := wal.Open(topicDir, wal.WithRecoveryVisitor(func(rec wal.Record) {
+		rebuildIndexes(dedupe, rec)
+	}))
 	if err != nil {
 		return nil, fmt.Errorf("open wal for topic %q:%w", name, err)
 	}
 
-	t = newTopic(name, log, b.dedupeCap)
+	t = newTopic(name, log, dedupe)
 	b.topics[name] = t
 	b.metrics.SetTopicCount(len(b.topics))
 	slog.Info("topic created", "topic", name)

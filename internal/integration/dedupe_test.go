@@ -123,3 +123,51 @@ func TestFanOutAcrossConsumerIDs(t *testing.T) {
 		t.Fatalf("consumer-B got %v, want %v", gotB, wantIDs)
 	}
 }
+
+// M1 owned risk test: a dedupe key published before a restart must
+// still deduplicate after it. The broker rebuilds the dedupe index
+// from the WAL on Open (ADR 0018), so a re-publish of the same key
+// returns the original MsgID with no second WAL append, and the
+// consumer sees exactly one message across the restart boundary.
+func TestDedupeSurvivesRestart(t *testing.T) {
+	h := startBroker(t)
+
+	pub := dial(t, h.addr)
+	pub.pub(t, "orders", "key-A", []byte("first"))
+	originalID := pub.expectOK(t)
+	pub.close()
+
+	// Restart over the same data dir — the in-memory dedupe LRU is
+	// gone; only the WAL survives.
+	h.restart(t)
+
+	// Same key, different payload: must be reported as a duplicate of
+	// the original, not appended anew.
+	repub := dial(t, h.addr)
+	repub.pub(t, "orders", "key-A", []byte("second-attempt"))
+	if dupID := repub.expectDup(t); dupID != originalID {
+		t.Fatalf("post-restart DUP id = %d, want %d", dupID, originalID)
+	}
+	if okID := repub.expectOK(t); okID != originalID {
+		t.Fatalf("post-restart OK after DUP id = %d, want %d", okID, originalID)
+	}
+	repub.close()
+
+	// Consumer must receive exactly one message (the original), and no
+	// duplicate from the re-publish.
+	sub := dial(t, h.addr)
+	sub.sub(t, "orders", "consumer-1")
+	_ = sub.expectOK(t)
+
+	msg := sub.expectMsg(t)
+	if msg.msgID != originalID {
+		t.Fatalf("delivered MsgID = %d, want %d", msg.msgID, originalID)
+	}
+	if !bytes.Equal(msg.payload, []byte("first")) {
+		t.Fatalf("delivered payload = %q, want %q (original, not the re-publish)", msg.payload, "first")
+	}
+	sub.ack(t, "consumer-1", msg.msgID)
+	_ = sub.expectOK(t)
+	// No second delivery: the re-publish never created a new record.
+	sub.expectNoMsg(t, 250_000_000) // 250ms in ns
+}
