@@ -112,7 +112,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("tls: load keypair: %w", err)
 		}
 		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
-		tlsOpts := append(serverOpts[:len(serverOpts):len(serverOpts)], server.WithTLS(tlsCfg))
+		tlsOpts := make([]server.Option, 0, len(serverOpts)+1)
+		tlsOpts = append(tlsOpts, serverOpts...)
+		tlsOpts = append(tlsOpts, server.WithTLS(tlsCfg))
 		servers = append(servers, server.NewWithObservability(cfg.TLSAddr, b, mtr, tlsOpts...))
 	}
 
