@@ -13,17 +13,18 @@ import (
 type Inflight struct {
 	MsgID       uint64
 	Topic       string
+	Partition   int
 	Payload     []byte
 	DeliveredAt time.Time
 	Attempts    int
 }
 
-// Consumer holds the per-consumer ack state for one Topic. See
-// ADR 0011 for why hasAcked is a separate flag rather than overloading
-// lastAcked == 0.
+// Consumer holds the per-consumer ack state for one Partition (ADR
+// 0021 — pre-M4 this was per-Topic). See ADR 0011 for why hasAcked is a
+// separate flag rather than overloading lastAcked == 0.
 type Consumer struct {
-	ID    string
-	topic *Topic
+	ID   string
+	part *Partition
 
 	mu sync.Mutex
 	// hasAcked distinguishes "never acked anything" from "acked
@@ -39,10 +40,10 @@ type Consumer struct {
 	persistDirty atomic.Bool
 }
 
-func newConsumer(id string, topic *Topic) *Consumer {
+func newConsumer(id string, part *Partition) *Consumer {
 	return &Consumer{
 		ID:        id,
-		topic:     topic,
+		part:      part,
 		aboveLast: make(map[uint64]struct{}),
 		inflight:  make(map[uint64]*Inflight),
 	}

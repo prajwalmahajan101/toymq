@@ -19,15 +19,15 @@ type consumerOffsets struct {
 	AboveLast []uint64 `json:"above_last"`
 }
 
-func (t *Topic) snapshotOffsets() offsetsFile {
-	t.consumersMu.RLock()
-	defer t.consumersMu.RUnlock()
+func (p *Partition) snapshotOffsets() offsetsFile {
+	p.consumersMu.RLock()
+	defer p.consumersMu.RUnlock()
 
 	out := offsetsFile{
-		Consumers: make(map[string]consumerOffsets, len(t.consumers)),
+		Consumers: make(map[string]consumerOffsets, len(p.consumers)),
 	}
 
-	for id, c := range t.consumers {
+	for id, c := range p.consumers {
 		c.mu.Lock()
 		snap := consumerOffsets{
 			HasAcked:  c.hasAcked,
@@ -45,16 +45,18 @@ func (t *Topic) snapshotOffsets() offsetsFile {
 	return out
 }
 
-func (t *Topic) flushOffsets(dataDir string) error {
-	t.consumersMu.RLock()
-	for _, c := range t.consumers {
+// flushOffsets atomically writes this partition's consumer offsets to
+// <dir>/offsets.json (dir is the partition's own directory — the topic
+// dir for a 1-partition/flat topic, or topics/<name>/<id> for N>1).
+func (p *Partition) flushOffsets() error {
+	p.consumersMu.RLock()
+	for _, c := range p.consumers {
 		c.persistDirty.Store(false)
 	}
-	t.consumersMu.RUnlock()
-	snapshot := t.snapshotOffsets()
+	p.consumersMu.RUnlock()
+	snapshot := p.snapshotOffsets()
 
-	topicDir := filepath.Join(dataDir, "topics", t.name)
-	path := filepath.Join(topicDir, "offsets.json")
+	path := filepath.Join(p.dir, "offsets.json")
 	tmp := path + ".tmp"
 
 	f, err := os.Create(tmp)
@@ -80,12 +82,12 @@ func (t *Topic) flushOffsets(dataDir string) error {
 		os.Remove(tmp)
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}
-	slog.Debug("offsets flushed", "topic", t.name)
+	slog.Debug("offsets flushed", "topic", p.topic, "partition", p.id)
 	return nil
 }
 
-func (t *Topic) loadOffsets(dataDir string) error {
-	path := filepath.Join(dataDir, "topics", t.name, "offsets.json")
+func (p *Partition) loadOffsets() error {
+	path := filepath.Join(p.dir, "offsets.json")
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -102,7 +104,7 @@ func (t *Topic) loadOffsets(dataDir string) error {
 	}
 
 	for id, off := range data.Consumers {
-		c := t.getOrCreateConsumer(id)
+		c := p.getOrCreateConsumer(id)
 		c.mu.Lock()
 		c.hasAcked = off.HasAcked
 		c.lastAcked = off.LastAcked
