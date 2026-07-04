@@ -18,6 +18,7 @@ func runPub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	addr := fs.String("addr", config.DefaultAddr, "broker address")
 	key := fs.String("key", "", "dedupe key (optional)")
+	conn := registerConnFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: toymqctl pub [flags] <topic> <payload>")
 		fs.PrintDefaults()
@@ -31,9 +32,15 @@ func runPub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	topic, payload := fs.Arg(0), fs.Arg(1)
 
+	opts, err := conn.dialOptions()
+	if err != nil {
+		fmt.Fprintf(stderr, "toymqctl pub: %v\n", err)
+		return exitUsage
+	}
+
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
-	c, err := client.Dial(dialCtx, *addr)
+	c, err := client.Dial(dialCtx, *addr, opts...)
 	if err != nil {
 		fmt.Fprintf(stderr, "toymqctl pub: dial: %v\n", err)
 		return exitErr

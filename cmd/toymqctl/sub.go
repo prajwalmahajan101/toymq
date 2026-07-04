@@ -17,6 +17,7 @@ func runSub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	addr := fs.String("addr", config.DefaultAddr, "broker address")
 	noAutoAck := fs.Bool("no-auto-ack", false, "do not ACK messages automatically")
 	maxMsgs := fs.Int("max-msgs", 0, "exit after N messages (0 = unbounded)")
+	conn := registerConnFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: toymqctl sub [flags] <topic> <consumer-id>")
 		fs.PrintDefaults()
@@ -30,8 +31,14 @@ func runSub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	topic, consumerID := fs.Arg(0), fs.Arg(1)
 
+	opts, err := conn.dialOptions()
+	if err != nil {
+		fmt.Fprintf(stderr, "toymqctl sub: %v\n", err)
+		return exitUsage
+	}
+
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-	c, err := client.Dial(dialCtx, *addr)
+	c, err := client.Dial(dialCtx, *addr, opts...)
 	cancel()
 	if err != nil {
 		fmt.Fprintf(stderr, "toymqctl sub: dial: %v\n", err)

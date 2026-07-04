@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -89,7 +90,31 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 	}()
 
-	srv := server.NewWithObservability(cfg.Addr, b, mtr)
+	// Handshake / auth / TLS options (ADR 0020), shared by both listeners.
+	serverOpts := []server.Option{server.WithRequireHello(cfg.RequireHello)}
+	if cfg.AuthTokenFile != "" {
+		tokens, err := server.LoadTokens(cfg.AuthTokenFile)
+		if err != nil {
+			return fmt.Errorf("auth: %w", err)
+		}
+		serverOpts = append(serverOpts, server.WithTokens(tokens))
+		logger.Info("auth enabled", "tokens", len(tokens))
+	}
+
+	// Plain listener on -addr, plus an optional TLS listener on -tls-addr
+	// that runs side-by-side so clients can migrate one at a time.
+	servers := []*server.Server{
+		server.NewWithObservability(cfg.Addr, b, mtr, serverOpts...),
+	}
+	if cfg.TLSAddr != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+		if err != nil {
+			return fmt.Errorf("tls: load keypair: %w", err)
+		}
+		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+		tlsOpts := append(serverOpts[:len(serverOpts):len(serverOpts)], server.WithTLS(tlsCfg))
+		servers = append(servers, server.NewWithObservability(cfg.TLSAddr, b, mtr, tlsOpts...))
+	}
 
 	// Metrics HTTP server (optional). Lives on a separate goroutine
 	// keyed by cfg.MetricsAddr so the broker's TCP wire-protocol
@@ -117,19 +142,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}()
 	}
 
-	serveErr := make(chan error, 1)
-	go func() {
-		serveErr <- srv.Serve(ctx)
-	}()
+	// One Serve goroutine per listener; all report to serveErr.
+	serveErr := make(chan error, len(servers))
+	for _, srv := range servers {
+		go func(srv *server.Server) {
+			serveErr <- srv.Serve(ctx)
+		}(srv)
+	}
 
-	// Wait for either Serve to error out or for ctx to cancel
+	// Wait for any Serve to error out or for ctx to cancel
 	// (SIGINT / SIGTERM). Either way, run graceful shutdown.
 	select {
 	case err := <-serveErr:
 		if err != nil {
 			return fmt.Errorf("serve: %w", err)
 		}
-		// Serve returned nil — clean exit, no further work.
+		// A Serve returned nil (listener closed) — clean exit.
 		return nil
 	case <-ctx.Done():
 		logger.Info("shutdown signal received")
@@ -138,11 +166,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	shutCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 
-	if err := srv.Shutdown(shutCtx); err != nil {
-		logger.Warn("shutdown drain", "err", err)
+	for _, srv := range servers {
+		if err := srv.Shutdown(shutCtx); err != nil {
+			logger.Warn("shutdown drain", "err", err)
+		}
 	}
-	if err := <-serveErr; err != nil {
-		return fmt.Errorf("serve after shutdown: %w", err)
+	for range servers {
+		if err := <-serveErr; err != nil {
+			return fmt.Errorf("serve after shutdown: %w", err)
+		}
 	}
 
 	if metricsSrv != nil {

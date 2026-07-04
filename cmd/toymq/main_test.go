@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"io"
@@ -163,14 +164,22 @@ func TestRunClientRoundTrip(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	go func() { conn.Write([]byte("PUB orders - 5\nhello\n")) }()
-	buf := make([]byte, 32)
-	n, err := conn.Read(buf)
+	// Default posture requires the HELLO handshake (ADR 0020).
+	go func() { conn.Write([]byte("HELLO 1\nPUB orders - 5\nhello\n")) }()
+	br := bufio.NewReader(conn)
+	hello, err := br.ReadString('\n')
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("read HELLO resp: %v", err)
 	}
-	if !strings.HasPrefix(string(buf[:n]), "OK ") {
-		t.Fatalf("got %q want OK ...", string(buf[:n]))
+	if strings.TrimRight(hello, "\r\n") != "HELLO 1 OK" {
+		t.Fatalf("handshake = %q, want HELLO 1 OK", hello)
+	}
+	pubResp, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read PUB resp: %v", err)
+	}
+	if !strings.HasPrefix(pubResp, "OK ") {
+		t.Fatalf("got %q want OK ...", pubResp)
 	}
 
 	conn.Close()

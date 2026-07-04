@@ -36,6 +36,11 @@ type benchConfig struct {
 	// the broker's mode; this is a record so per-message vs batched runs
 	// are self-documenting and tabulatable (the README batched column).
 	Fsync string
+
+	AuthToken   string
+	TLS         bool
+	TLSCA       string
+	TLSInsecure bool
 }
 
 func main() {
@@ -44,16 +49,38 @@ func main() {
 	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr))
 }
 
+// benchDialOptions turns the auth/TLS flags into client.Dial options.
+func benchDialOptions(cfg benchConfig) ([]client.Option, error) {
+	var opts []client.Option
+	if cfg.AuthToken != "" {
+		opts = append(opts, client.WithAuth(cfg.AuthToken))
+	}
+	if cfg.TLS || cfg.TLSCA != "" || cfg.TLSInsecure {
+		tlsCfg, err := client.TLSConfig(cfg.TLSCA, cfg.TLSInsecure)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, client.WithTLS(tlsCfg))
+	}
+	return opts, nil
+}
+
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	cfg, code := parseFlags(args, stderr)
 	if code != exitOK {
 		return code
 	}
 
+	dialOpts, err := benchDialOptions(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "toymq-bench: %v\n", err)
+		return exitUsage
+	}
+
 	clients := make([]*client.Client, cfg.Producers)
 	for i := 0; i < cfg.Producers; i++ {
 		dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-		c, err := client.Dial(dialCtx, cfg.Addr)
+		c, err := client.Dial(dialCtx, cfg.Addr, dialOpts...)
 		cancel()
 		if err != nil {
 			fmt.Fprintf(stderr, "toymq-bench: dial #%d: %v\n", i, err)
@@ -105,6 +132,10 @@ func parseFlags(args []string, stderr io.Writer) (benchConfig, int) {
 	fs.IntVar(&cfg.Msgs, "msgs", 10000, "total messages across all producers")
 	fs.IntVar(&cfg.Size, "size", 256, "payload byte size")
 	fs.StringVar(&cfg.Fsync, "fsync", "per-message", "label the run with the broker's fsync mode: per-message|batched|none")
+	fs.StringVar(&cfg.AuthToken, "auth-token", "", "bearer token sent in the HELLO handshake")
+	fs.BoolVar(&cfg.TLS, "tls", false, "dial over TLS")
+	fs.StringVar(&cfg.TLSCA, "tls-ca", "", "PEM CA file trusted for -tls (empty = system roots)")
+	fs.BoolVar(&cfg.TLSInsecure, "tls-insecure", false, "skip TLS verification (dev/self-signed only)")
 
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: toymq-bench [flags]")
