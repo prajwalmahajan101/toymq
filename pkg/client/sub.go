@@ -83,29 +83,30 @@ func (c *Client) rollbackSub() {
 	c.subMu.Unlock()
 }
 
-// Ack sends ACK consumerID msgID and blocks for the broker's OK
-// response. Use when the caller already knows the consumer/msg-id
-// pair and does not need to receive the MSG first (e.g. one-shot
-// CLI tools or operator scripts). For the streaming case,
-// Delivery.Ack is more convenient.
-func (c *Client) Ack(ctx context.Context, consumerID string, msgID uint64) error {
-	return c.sendAckLike(ctx, "ACK", consumerID, msgID)
+// Ack sends ACK consumerID partition msgID and blocks for the broker's OK
+// response. Use when the caller already knows the consumer/partition/msg-id
+// triple and does not need to receive the MSG first (e.g. one-shot CLI
+// tools or operator scripts). For the streaming case, Delivery.Ack is more
+// convenient. MsgIDs are partition-local, so partition is required (ADR
+// 0021).
+func (c *Client) Ack(ctx context.Context, consumerID string, partition int, msgID uint64) error {
+	return c.sendAckLike(ctx, "ACK", consumerID, partition, msgID)
 }
 
 // Nack is the negative-acknowledge counterpart of Ack.
-func (c *Client) Nack(ctx context.Context, consumerID string, msgID uint64) error {
-	return c.sendAckLike(ctx, "NACK", consumerID, msgID)
+func (c *Client) Nack(ctx context.Context, consumerID string, partition int, msgID uint64) error {
+	return c.sendAckLike(ctx, "NACK", consumerID, partition, msgID)
 }
 
-func (c *Client) makeAck(consumerID string, msgID uint64) func(context.Context) error {
-	return func(ctx context.Context) error { return c.Ack(ctx, consumerID, msgID) }
+func (c *Client) makeAck(consumerID string, partition int, msgID uint64) func(context.Context) error {
+	return func(ctx context.Context) error { return c.Ack(ctx, consumerID, partition, msgID) }
 }
 
-func (c *Client) makeNack(consumerID string, msgID uint64) func(context.Context) error {
-	return func(ctx context.Context) error { return c.Nack(ctx, consumerID, msgID) }
+func (c *Client) makeNack(consumerID string, partition int, msgID uint64) func(context.Context) error {
+	return func(ctx context.Context) error { return c.Nack(ctx, consumerID, partition, msgID) }
 }
 
-func (c *Client) sendAckLike(ctx context.Context, verb, consumerID string, msgID uint64) error {
+func (c *Client) sendAckLike(ctx context.Context, verb, consumerID string, partition int, msgID uint64) error {
 	if c.isClosed() {
 		return ErrClosed
 	}
@@ -118,7 +119,7 @@ func (c *Client) sendAckLike(ctx context.Context, verb, consumerID string, msgID
 		c.pending.cancel(p)
 		return ErrClosed
 	}
-	if _, werr := fmt.Fprintf(c.w, "%s %s %d\n", verb, consumerID, msgID); werr != nil {
+	if _, werr := fmt.Fprintf(c.w, "%s %s %d %d\n", verb, consumerID, partition, msgID); werr != nil {
 		c.writeMu.Unlock()
 		c.pending.cancel(p)
 		return fmt.Errorf("%w: write %s: %w", ErrTransport, verb, werr)
