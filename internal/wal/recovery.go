@@ -7,7 +7,11 @@ import (
 	"os"
 )
 
-func (l *Log) recover() error {
+// recover scans the segment for a torn tail, truncating at the last
+// good frame boundary. When visit is non-nil it is called for each
+// valid record in ascending MsgID order (never for the truncated
+// tail), letting callers rebuild in-memory indexes in the same pass.
+func (l *Log) recover(visit func(Record)) error {
 	f, err := os.Open(l.path)
 	if err != nil {
 		return err
@@ -40,6 +44,9 @@ func (l *Log) recover() error {
 		pos += uint64(n)
 		lastGood = pos
 		lastID = rec.MsgID
+		if visit != nil {
+			visit(rec)
+		}
 	}
 
 	if lastGood > 0 {

@@ -20,10 +20,31 @@ type Log struct {
 	cond      *sync.Cond
 }
 
+// Option configures Open.
+type Option func(*options)
+
+type options struct {
+	recoveryVisitor func(Record)
+}
+
+// WithRecoveryVisitor registers fn to be invoked once for every valid
+// record found during the recovery scan, in ascending MsgID order.
+// Records beyond a torn tail (which get truncated) are never visited.
+// The broker uses this to rebuild the per-topic dedupe index from the
+// log without a second scan or a sidecar file — see ADR 0018.
+func WithRecoveryVisitor(fn func(Record)) Option {
+	return func(o *options) { o.recoveryVisitor = fn }
+}
+
 // Open opens (or creates) the segment file at dir/000000.log, scans
 // for a torn tail, truncates if needed, and returns a Log ready for
 // Append and NewReader. See ADR 0003.
-func Open(dir string) (*Log, error) {
+func Open(dir string, opts ...Option) (*Log, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -41,7 +62,7 @@ func Open(dir string) (*Log, error) {
 	}
 	l.cond = sync.NewCond(&l.mu)
 
-	if err := l.recover(); err != nil {
+	if err := l.recover(o.recoveryVisitor); err != nil {
 		f.Close()
 		return nil, err
 	}
