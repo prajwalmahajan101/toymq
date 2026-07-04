@@ -35,27 +35,30 @@ func (b *Broker) sweepRedelivery(now time.Time) {
 	b.mu.RUnlock()
 
 	for _, t := range topics {
-		t.consumersMu.RLock()
-		consumers := make([]*Consumer, 0, len(t.consumers))
-		for _, c := range t.consumers {
-			consumers = append(consumers, c)
-		}
-		t.consumersMu.RUnlock()
+		for _, p := range t.partitions {
+			p.consumersMu.RLock()
+			consumers := make([]*Consumer, 0, len(p.consumers))
+			for _, c := range p.consumers {
+				consumers = append(consumers, c)
+			}
+			p.consumersMu.RUnlock()
 
-		for _, c := range consumers {
-			tasks := b.collectExpired(c, now)
-			for _, task := range tasks {
-				slog.Info("redelivering",
-					"topic", t.name,
-					"consumer-id", c.ID,
-					"msg-id", task.inf.MsgID,
-					"attempts", task.inf.Attempts,
-				)
-				b.metrics.IncRedelivery(t.name, task.inf.Attempts)
-				select {
-				case task.sendCh <- task.inf:
-				default:
-					// channel full, next tick will retry
+			for _, c := range consumers {
+				tasks := b.collectExpired(c, now)
+				for _, task := range tasks {
+					slog.Info("redelivering",
+						"topic", t.name,
+						"partition", p.id,
+						"consumer-id", c.ID,
+						"msg-id", task.inf.MsgID,
+						"attempts", task.inf.Attempts,
+					)
+					b.metrics.IncRedelivery(t.name, task.inf.Attempts)
+					select {
+					case task.sendCh <- task.inf:
+					default:
+						// channel full, next tick will retry
+					}
 				}
 			}
 		}

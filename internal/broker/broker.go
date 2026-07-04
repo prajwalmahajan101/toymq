@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -28,6 +29,12 @@ const (
 type Broker struct {
 	dataDir   string
 	dedupeCap int
+
+	// defaultPartitions is the partition count applied to a topic
+	// auto-created by a first PUB/SUB (--default-partitions). An
+	// existing on-disk topic keeps its recovered count; an explicit
+	// CreateTopic overrides. Minimum 1 (ADR 0021).
+	defaultPartitions int
 
 	visibilityTimeout time.Duration
 	redeliverInterval time.Duration
@@ -70,13 +77,21 @@ func New(dataDir string, dedupeCap int) (*Broker, error) {
 	return NewWithTimings(dataDir, dedupeCap, defaultVisibilityTimeout, defaultRedeliverInterval)
 }
 
+// NewWithTimingsPartitions is NewWithTimings plus an explicit
+// default-partition count for auto-created topics (ADR 0021). Used by
+// integration tests that exercise partitioning without going through the
+// CREATE verb.
+func NewWithTimingsPartitions(dataDir string, dedupeCap, defaultPartitions int, visibility, redeliverInterval time.Duration) (*Broker, error) {
+	return newBroker(dataDir, dedupeCap, defaultPartitions, visibility, redeliverInterval, SyncConfig{})
+}
+
 // NewWithObservability is NewWithTimings plus the WAL SyncConfig and
 // optional metrics + tracer wiring. cmd/toymq calls this with the
 // configured fsync mode and non-nil m/tr when --metrics-addr or
 // --otlp-endpoint is set; tests pass a zero SyncConfig and nil m/tr and
 // get the same behaviour as New.
-func NewWithObservability(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration, sc SyncConfig, m *metrics.Metrics, tr trace.Tracer) (*Broker, error) {
-	b, err := newBroker(dataDir, dedupeCap, visibility, redeliverInterval, sc)
+func NewWithObservability(dataDir string, dedupeCap, defaultPartitions int, visibility, redeliverInterval time.Duration, sc SyncConfig, m *metrics.Metrics, tr trace.Tracer) (*Broker, error) {
+	b, err := newBroker(dataDir, dedupeCap, defaultPartitions, visibility, redeliverInterval, sc)
 	if err != nil {
 		return nil, err
 	}
@@ -91,19 +106,24 @@ func NewWithObservability(dataDir string, dedupeCap int, visibility, redeliverIn
 // Use this when integration tests need faster redelivery than the 30 s
 // production default.
 func NewWithTimings(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration) (*Broker, error) {
-	return newBroker(dataDir, dedupeCap, visibility, redeliverInterval, SyncConfig{})
+	return newBroker(dataDir, dedupeCap, 1, visibility, redeliverInterval, SyncConfig{})
 }
 
 // newBroker is the shared constructor: it applies sc to every topic log
 // it recovers, so the configured fsync mode is in effect from the first
-// recovered topic (not just topics created after startup).
-func newBroker(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration, sc SyncConfig) (*Broker, error) {
+// recovered topic (not just topics created after startup). defaultPartitions
+// (min 1) is the count applied to topics auto-created after startup.
+func newBroker(dataDir string, dedupeCap, defaultPartitions int, visibility, redeliverInterval time.Duration, sc SyncConfig) (*Broker, error) {
+	if defaultPartitions < 1 {
+		defaultPartitions = 1
+	}
 	persistCtx, persistCancel := context.WithCancel(context.Background())
 	redeliverCtx, redeliverCancel := context.WithCancel(context.Background())
 
 	b := &Broker{
 		dataDir:           dataDir,
 		dedupeCap:         dedupeCap,
+		defaultPartitions: defaultPartitions,
 		visibilityTimeout: visibility,
 		redeliverInterval: redeliverInterval,
 		sync:              sc,
@@ -128,16 +148,12 @@ func newBroker(dataDir string, dedupeCap int, visibility, redeliverInterval time
 		if !e.IsDir() {
 			continue
 		}
-		t, err := b.getOrCreateTopic(e.Name())
-		if err != nil {
+		// getOrCreateTopic infers the partition count from disk (meta.json
+		// or flat layout) and each partition loads its own offsets on open.
+		if _, err := b.getOrCreateTopic(e.Name()); err != nil {
 			persistCancel()
 			redeliverCancel()
 			return nil, err
-		}
-		if err := t.loadOffsets(b.dataDir); err != nil {
-			persistCancel()
-			redeliverCancel()
-			return nil, fmt.Errorf("load offsets for %s: %w", e.Name(), err)
 		}
 	}
 
@@ -178,21 +194,23 @@ func (b *Broker) flushDirty() {
 	b.mu.RUnlock()
 
 	for _, t := range topics {
-		if !topicHasDirty(t) {
-			continue
+		for _, p := range t.partitions {
+			if !partitionHasDirty(p) {
+				continue
+			}
+			err := p.flushOffsets()
+			if err != nil {
+				slog.Error("flush offsets", "topic", t.name, "partition", p.id, "err", err)
+			}
+			b.metrics.IncOffsetsFlush(t.name, err == nil)
 		}
-		err := t.flushOffsets(b.dataDir)
-		if err != nil {
-			slog.Error("flush offsets", "topic", t.name, "err", err)
-		}
-		b.metrics.IncOffsetsFlush(t.name, err == nil)
 	}
 }
 
-func topicHasDirty(t *Topic) bool {
-	t.consumersMu.RLock()
-	defer t.consumersMu.RUnlock()
-	for _, c := range t.consumers {
+func partitionHasDirty(p *Partition) bool {
+	p.consumersMu.RLock()
+	defer p.consumersMu.RUnlock()
+	for _, c := range p.consumers {
 		if c.persistDirty.Load() {
 			return true
 		}
@@ -200,6 +218,9 @@ func topicHasDirty(t *Topic) bool {
 	return false
 }
 
+// getOrCreateTopic returns the topic, opening (recovering) it if absent.
+// A brand-new topic gets the server default partition count; an existing
+// on-disk topic keeps its recovered count.
 func (b *Broker) getOrCreateTopic(name string) (*Topic, error) {
 	b.mu.RLock()
 	t, ok := b.topics[name]
@@ -214,23 +235,103 @@ func (b *Broker) getOrCreateTopic(name string) (*Topic, error) {
 	if t, ok := b.topics[name]; ok {
 		return t, nil
 	}
+	return b.openTopicLocked(name, 0)
+}
 
+// CreateTopic opens (or validates) a topic with an exact partition count.
+// It is idempotent: re-creating with the same count returns nil; a
+// different count is an error. Partitions must be >= 1 (ADR 0021).
+func (b *Broker) CreateTopic(name string, partitions int) error {
+	if partitions < 1 {
+		return fmt.Errorf("create topic %q: partitions must be >= 1, got %d", name, partitions)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if t, ok := b.topics[name]; ok {
+		if t.count() != partitions {
+			return fmt.Errorf("topic %q already exists with %d partitions, not %d", name, t.count(), partitions)
+		}
+		return nil
+	}
+	_, err := b.openTopicLocked(name, partitions)
+	return err
+}
+
+// openTopicLocked opens (or recovers) a topic and registers it. wantCount
+// > 0 forces an exact partition count (CreateTopic); wantCount == 0 infers
+// the count from disk for an existing topic, or the server default for a
+// new one. The caller must hold b.mu.
+func (b *Broker) openTopicLocked(name string, wantCount int) (*Topic, error) {
 	topicDir := filepath.Join(b.dataDir, "topics", name)
+	diskCount, exists, err := topicPartitionCount(topicDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var count int
+	switch {
+	case exists && wantCount > 0 && diskCount != wantCount:
+		return nil, fmt.Errorf("topic %q already exists with %d partitions, not %d", name, diskCount, wantCount)
+	case exists:
+		count = diskCount
+	case wantCount > 0:
+		count = wantCount
+	default:
+		count = b.defaultPartitions
+	}
+	if count < 1 {
+		count = 1
+	}
+
+	// meta.json is written only for N>1, so a flat 1-partition topic stays
+	// byte-for-byte identical to the pre-M4 layout.
+	if !exists && count > 1 {
+		if err := writeTopicMeta(topicDir, count); err != nil {
+			return nil, err
+		}
+	}
+
+	parts := make([]*Partition, count)
+	for i := 0; i < count; i++ {
+		dir := topicDir
+		if count > 1 {
+			dir = filepath.Join(topicDir, strconv.Itoa(i))
+		}
+		p, err := b.openPartition(name, i, dir)
+		if err != nil {
+			for j := 0; j < i; j++ {
+				_ = parts[j].log.Close()
+			}
+			return nil, err
+		}
+		parts[i] = p
+	}
+
+	t := newTopic(name, parts)
+	b.topics[name] = t
+	b.metrics.SetTopicCount(len(b.topics))
+	slog.Info("topic created", "topic", name, "partitions", count)
+	return t, nil
+}
+
+// openPartition opens one partition's WAL (rebuilding its dedupe LRU via
+// the recovery visitor, ADR 0018) and loads its persisted offsets.
+func (b *Broker) openPartition(topic string, id int, dir string) (*Partition, error) {
 	dedupe := NewDedupeIndex(b.dedupeCap)
-	log, err := wal.Open(topicDir,
+	log, err := wal.Open(dir,
 		wal.WithSyncMode(b.sync.Mode, b.sync.Interval),
 		wal.WithRecoveryVisitor(func(rec wal.Record) {
 			rebuildIndexes(dedupe, rec)
 		}))
 	if err != nil {
-		return nil, fmt.Errorf("open wal for topic %q:%w", name, err)
+		return nil, fmt.Errorf("open wal for topic %q partition %d: %w", topic, id, err)
 	}
-
-	t = newTopic(name, log, dedupe)
-	b.topics[name] = t
-	b.metrics.SetTopicCount(len(b.topics))
-	slog.Info("topic created", "topic", name)
-	return t, nil
+	p := newPartition(topic, id, dir, log, dedupe)
+	if err := p.loadOffsets(); err != nil {
+		_ = log.Close()
+		return nil, fmt.Errorf("load offsets for topic %q partition %d: %w", topic, id, err)
+	}
+	return p, nil
 }
 
 // EnsureTopic creates (or recovers) the topic if it is absent, returning
@@ -244,19 +345,32 @@ func (b *Broker) EnsureTopic(topic string) error {
 	return err
 }
 
-// Publish appends payload to topic and returns (msgID, duplicate?,
-// err). A non-empty key activates dedupe: a second publish with the
-// same key returns the original MsgID and duplicate=true without a
-// new WAL write. Equivalent to PublishCtx(context.Background(), ...).
-func (b *Broker) Publish(topic, key string, payload []byte) (uint64, bool, error) {
-	return b.PublishCtx(context.Background(), topic, key, payload)
+// TopicPartitions ensures the topic exists (creating it with the default
+// count if absent) and returns its partition count. Used by the server to
+// range-check a SUB's partition selector before acknowledging.
+func (b *Broker) TopicPartitions(topic string) (int, error) {
+	t, err := b.getOrCreateTopic(topic)
+	if err != nil {
+		return 0, err
+	}
+	return t.count(), nil
+}
+
+// Publish appends payload to topic and returns (msgID, partition,
+// duplicate?, err). Routing (ADR 0021): an explicit partition
+// (partitionSet, from PUB <topic>#<n>) wins; else a non-empty routingKey
+// hashes to a partition; else the keyless publish round-robins. A
+// non-empty dedupeKey activates per-partition dedupe. Equivalent to
+// PublishCtx(context.Background(), ...).
+func (b *Broker) Publish(topic, dedupeKey, routingKey string, partition int, partitionSet bool, payload []byte) (uint64, int, bool, error) {
+	return b.PublishCtx(context.Background(), topic, dedupeKey, routingKey, partition, partitionSet, payload)
 }
 
 // PublishCtx is Publish with a context that carries the OTel span.
 // The broker creates a "broker.publish" span when a tracer is wired;
 // otherwise the span is a no-op and ctx is only used as the cancel
 // boundary for future tracing additions.
-func (b *Broker) PublishCtx(ctx context.Context, topic, key string, payload []byte) (uint64, bool, error) {
+func (b *Broker) PublishCtx(ctx context.Context, topic, dedupeKey, routingKey string, partition int, partitionSet bool, payload []byte) (uint64, int, bool, error) {
 	ctx, span := b.startSpan(ctx, "broker.publish",
 		tracing.AttrTopic.String(topic),
 		tracing.AttrPayloadBytes.Int(len(payload)),
@@ -265,9 +379,13 @@ func (b *Broker) PublishCtx(ctx context.Context, topic, key string, payload []by
 
 	t, err := b.getOrCreateTopic(topic)
 	if err != nil {
-		return 0, false, err
+		return 0, 0, false, err
 	}
-	id, dup, err := t.publishCtx(ctx, key, payload, b.metrics)
+	p, err := t.route(partition, partitionSet, routingKey)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	id, dup, err := p.publishCtx(ctx, dedupeKey, payload, b.metrics)
 	if err == nil {
 		span.SetAttributes(tracing.AttrDuplicate.Bool(dup))
 		if dup {
@@ -276,7 +394,7 @@ func (b *Broker) PublishCtx(ctx context.Context, topic, key string, payload []by
 			b.metrics.IncPublish(topic, len(payload))
 		}
 	}
-	return id, dup, err
+	return id, p.id, dup, err
 }
 
 // Close cancels the redelivery and persist loops (in that order so
@@ -293,19 +411,23 @@ func (b *Broker) Close() error {
 	defer b.mu.Unlock()
 	var firstErr error
 	for _, t := range b.topics {
-		if err := t.log.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		for _, p := range t.partitions {
+			if err := p.log.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	slog.Info("broker closed")
 	return firstErr
 }
 
-// Subscribe attaches consumerID to topic. Subsequent Inflight
-// snapshots stream into sendCh until ctx cancels. A second Subscribe
-// for the same consumerID detaches the previous Subscription before
-// the new delivery goroutine starts.
-func (b *Broker) Subscribe(ctx context.Context, topic, consumerID string, sendCh chan<- *Inflight) (*Subscription, error) {
+// Subscribe attaches consumerID to a topic selection and returns one
+// Subscription per matched partition. all (SUB <topic> or <topic>#*)
+// subscribes to every partition, fanning their deliveries into the single
+// sendCh; otherwise the one partition is used. Each partition applies the
+// single-subscription-per-consumer swap independently. Inflight snapshots
+// stream into sendCh until ctx cancels.
+func (b *Broker) Subscribe(ctx context.Context, topic string, partition int, all bool, consumerID string, sendCh chan<- *Inflight) ([]*Subscription, error) {
 	ctx, span := b.startSpan(ctx, "broker.subscribe",
 		tracing.AttrTopic.String(topic),
 		tracing.AttrConsumerID.String(consumerID),
@@ -316,11 +438,24 @@ func (b *Broker) Subscribe(ctx context.Context, topic, consumerID string, sendCh
 	if err != nil {
 		return nil, err
 	}
-	sub, err := t.subscribe(ctx, consumerID, sendCh, b.metrics)
-	if err == nil {
-		b.metrics.IncSubscribe(topic)
+	parts, err := t.selectPartitions(partition, all)
+	if err != nil {
+		return nil, err
 	}
-	return sub, err
+	subs := make([]*Subscription, 0, len(parts))
+	for _, p := range parts {
+		sub, err := p.subscribe(ctx, consumerID, sendCh, b.metrics)
+		if err != nil {
+			for _, s := range subs {
+				s.cancel()
+				<-s.done
+			}
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	b.metrics.IncSubscribe(topic)
+	return subs, nil
 }
 
 // startSpan is the broker's single entry point for tracer.Start —
@@ -334,15 +469,27 @@ func (b *Broker) startSpan(ctx context.Context, name string, attrs ...attribute.
 	return b.tracer.Start(ctx, name, trace.WithAttributes(attrs...))
 }
 
-// Ack records that consumerID successfully processed msgID on topic.
-// Advances lastAcked when msgID is contiguous; otherwise records in
-// aboveLast. Marks the consumer dirty for the next persist tick.
-func (b *Broker) Ack(topic, consumerID string, msgID uint64) error {
+// partitionAt returns the numbered partition of topic, range-checking it.
+func (b *Broker) partitionAt(topic string, partition int) (*Partition, error) {
 	t, err := b.getOrCreateTopic(topic)
+	if err != nil {
+		return nil, err
+	}
+	if partition < 0 || partition >= t.count() {
+		return nil, fmt.Errorf("partition %d out of range [0,%d) for topic %q", partition, t.count(), topic)
+	}
+	return t.partitions[partition], nil
+}
+
+// Ack records that consumerID successfully processed (partition, msgID)
+// on topic. Advances lastAcked when msgID is contiguous; otherwise records
+// in aboveLast. Marks the consumer dirty for the next persist tick.
+func (b *Broker) Ack(topic string, partition int, consumerID string, msgID uint64) error {
+	p, err := b.partitionAt(topic, partition)
 	if err != nil {
 		return err
 	}
-	c := t.getOrCreateConsumer(consumerID)
+	c := p.getOrCreateConsumer(consumerID)
 	if err := c.Ack(msgID); err != nil {
 		return err
 	}
@@ -356,12 +503,12 @@ func (b *Broker) Ack(topic, consumerID string, msgID uint64) error {
 // Nack pushes a fresh Inflight snapshot back onto sendCh for
 // immediate redelivery (non-blocking; the redelivery ticker covers
 // the buffer-full case) and bumps Attempts.
-func (b *Broker) Nack(topic, consumerID string, msgID uint64, sendCh chan<- *Inflight) error {
-	t, err := b.getOrCreateTopic(topic)
+func (b *Broker) Nack(topic string, partition int, consumerID string, msgID uint64, sendCh chan<- *Inflight) error {
+	p, err := b.partitionAt(topic, partition)
 	if err != nil {
 		return err
 	}
-	c := t.getOrCreateConsumer(consumerID)
+	c := p.getOrCreateConsumer(consumerID)
 	if err := c.Nack(msgID, sendCh); err != nil {
 		return err
 	}
