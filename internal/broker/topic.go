@@ -33,12 +33,24 @@ type Topic struct {
 	consumers   map[string]*Consumer
 }
 
-func newTopic(name string, log *wal.Log, dedupeCap int) *Topic {
+func newTopic(name string, log *wal.Log, dedupe *DedupeIndex) *Topic {
 	return &Topic{
 		name:      name,
 		log:       log,
-		dedupe:    NewDedupeIndex(dedupeCap),
+		dedupe:    dedupe,
 		consumers: make(map[string]*Consumer),
+	}
+}
+
+// rebuildIndexes replays one recovered WAL record into a topic's
+// in-memory indexes. It is the single materialisation seam: today it
+// runs during startup recovery (via wal.WithRecoveryVisitor), and in
+// v3 it is the reuse point for raft.StateMachine.Restore / snapshot
+// application, where the replicated log is the source of truth (ADR
+// 0018). Keep it deterministic — no wall-clock, no I/O.
+func rebuildIndexes(dedupe *DedupeIndex, rec wal.Record) {
+	if rec.DedupeKey != "" {
+		dedupe.Insert(rec.DedupeKey, rec.MsgID)
 	}
 }
 

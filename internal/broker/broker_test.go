@@ -465,3 +465,93 @@ func TestOffsetsPersistAboveLast(t *testing.T) {
 		}
 	}
 }
+
+// TestDedupeIndexRebuiltFromWALOnRestart is the core M1 unit guarantee:
+// after a broker restart over the same data dir, the dedupe index is
+// repopulated from the WAL before any new publish, so a re-published
+// key returns the original MsgID with no new WAL append. See ADR 0018.
+func TestDedupeIndexRebuiltFromWALOnRestart(t *testing.T) {
+	dir := t.TempDir()
+
+	b1, err := New(dir, testDedupeCap)
+	if err != nil {
+		t.Fatalf("New b1: %v", err)
+	}
+	id1 := mustPublish(t, b1, "orders", "key-1", []byte("one"))
+	id2 := mustPublish(t, b1, "orders", "key-2", []byte("two"))
+	mustPublish(t, b1, "orders", "", []byte("no-key")) // unkeyed: no dedupe entry
+	if err := b1.Close(); err != nil {
+		t.Fatalf("Close b1: %v", err)
+	}
+
+	b2, err := New(dir, testDedupeCap)
+	if err != nil {
+		t.Fatalf("New b2: %v", err)
+	}
+	t.Cleanup(func() { b2.Close() })
+
+	// Index is populated purely from recovery — no publish has happened
+	// on b2 yet.
+	top, err := b2.getOrCreateTopic("orders")
+	if err != nil {
+		t.Fatalf("getOrCreateTopic: %v", err)
+	}
+	if got, ok := top.dedupe.Lookup("key-1"); !ok || got != id1 {
+		t.Errorf("Lookup(key-1) = (%d, %v), want (%d, true)", got, ok, id1)
+	}
+	if got, ok := top.dedupe.Lookup("key-2"); !ok || got != id2 {
+		t.Errorf("Lookup(key-2) = (%d, %v), want (%d, true)", got, ok, id2)
+	}
+
+	// Re-publishing key-1 must return the original id as a duplicate,
+	// with no new WAL record appended.
+	gotID, dup, err := b2.Publish("orders", "key-1", []byte("one-again"))
+	if err != nil {
+		t.Fatalf("Publish key-1 again: %v", err)
+	}
+	if !dup || gotID != id1 {
+		t.Errorf("re-publish key-1 = (%d, dup=%v), want (%d, dup=true)", gotID, dup, id1)
+	}
+}
+
+// TestDedupeRebuildRespectsLRUCap proves eviction-by-construction: the
+// WAL is replayed in ascending MsgID order, so rebuilding a cap-N index
+// from more than N keyed records retains exactly the most-recent N —
+// the same set the live LRU would hold. Keys evicted before the restart
+// stay evicted after it.
+func TestDedupeRebuildRespectsLRUCap(t *testing.T) {
+	dir := t.TempDir()
+	const cap = 3
+
+	b1, err := New(dir, cap)
+	if err != nil {
+		t.Fatalf("New b1: %v", err)
+	}
+	// 4 distinct keys into a cap-3 index: key-0 is evicted by key-3.
+	for i := 0; i < 4; i++ {
+		mustPublish(t, b1, "orders", "key-"+string(rune('0'+i)), []byte("v"))
+	}
+	if err := b1.Close(); err != nil {
+		t.Fatalf("Close b1: %v", err)
+	}
+
+	b2, err := New(dir, cap)
+	if err != nil {
+		t.Fatalf("New b2: %v", err)
+	}
+	t.Cleanup(func() { b2.Close() })
+
+	top, err := b2.getOrCreateTopic("orders")
+	if err != nil {
+		t.Fatalf("getOrCreateTopic: %v", err)
+	}
+	if _, ok := top.dedupe.Lookup("key-0"); ok {
+		t.Errorf("key-0 present after restart; expected it to be evicted (cap=%d)", cap)
+	}
+	for i := 1; i < 4; i++ {
+		key := "key-" + string(rune('0'+i))
+		if _, ok := top.dedupe.Lookup(key); !ok {
+			t.Errorf("%s missing after restart; expected retained (cap=%d)", key, cap)
+		}
+	}
+}

@@ -24,7 +24,7 @@ func makeTopicForOffsets(t *testing.T, dataDir, name string) *Topic {
 		t.Fatalf("wal.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = log.Close() })
-	return newTopic(name, log, 16)
+	return newTopic(name, log, NewDedupeIndex(16))
 }
 
 func TestFlushOffsetsCreateFails(t *testing.T) {
