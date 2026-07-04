@@ -27,6 +27,9 @@
 | 0013 | [`pkg/client` architecture](./0013-pkg-client-architecture.md) | Accepted |
 | 0014 | [TUI framework choice: Bubble Tea](./0014-tui-framework-choice.md) | Accepted |
 | 0015 | [Observability stack: Prometheus + OpenTelemetry](./0015-observability-stack.md) | Accepted |
+| 0016 | [CI lint + Go version matrix + local hook](./0016-ci-lint-and-matrix.md) | Accepted |
+| 0017 | [Release automation with GoReleaser](./0017-release-automation.md) | Accepted |
+| 0018 | [Dedupe LRU recovery from the WAL](./0018-dedupe-recovery-from-wal.md) | Accepted |
 
 Each ADR is a short snapshot of *why* a decision was made, captured at the
 time the decision landed in code. They are not living docs — when a decision

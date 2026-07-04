@@ -72,19 +72,30 @@ possible; one breaking bump (HELLO frame) gated by major version.
 Branch convention: `feat/<milestone-slug>`.
 
 ## v2 M1 — Dedupe LRU persistence
-**Branch:** `feat/dedupe-persistence`
-- Sidecar file `dedupe.json`, atomically swapped like `offsets.json`
-  (mirror the pattern in [ADR 0006](./adr/0006-debounced-atomic-offsets.md)).
-- Debounced write on every dedupe insert; full flush on graceful
-  shutdown.
-- Load on `Broker.Open` before `Accept` unblocks.
-- **Owned risk test:** chaos soak — producer publishes with stable
-  dedupe keys, SIGKILL broker mid-stream, restart, replay; verify zero
-  duplicates returned to consumer across the restart boundary.
+**Branch:** `feat/dedupe-persistence` · **ADR:** [0018](./adr/0018-dedupe-recovery-from-wal.md)
+- **Approach chosen: rebuild the LRU from the WAL, not a sidecar file.**
+  The WAL already stores every `DedupeKey` and already scans every record
+  on `Open`; a sidecar `dedupe.json` would lag the WAL by its debounce
+  window (a residual duplicate hole) *and* would be a per-node artefact
+  `toyraft` never replicates in v3. Rebuild-from-WAL is zero-gap and is the
+  same materialisation seam v3's `raft.StateMachine.Restore` reuses. The
+  original sidecar sketch (mirroring [ADR 0006](./adr/0006-debounced-atomic-offsets.md))
+  is superseded by [ADR 0018](./adr/0018-dedupe-recovery-from-wal.md).
+- `wal.Open` gains `WithRecoveryVisitor`; the broker funnels each recovered
+  record through `rebuildIndexes` during recovery — which runs inside
+  `broker.New`, before `server.Serve` accepts connections.
+- **Owned risk test:** integration restart-dedupe — publish with a stable
+  key, restart over the same data dir, re-publish the same key, verify it
+  returns the original `MsgID` (DUP, no new append) and the consumer sees
+  exactly one message. Plus a unit LRU-cap-boundary test across restart.
+  (Confirmed failing on `main`, passing on the branch.)
 - **Wire impact:** none.
+- **v3 forward-compat note:** `topic.go` reads `time.Now()` for `TsNs` and
+  assigns `MsgID` from a local counter — both must move to the proposer for
+  deterministic `Apply` under toyraft. Recorded in ADR 0018 + v3 M1; not
+  built here.
 - **Exit:** closes the limitation in
-  [ADR 0013](./adr/0013-pkg-client-architecture.md); chaos test extended
-  with the restart-dedupe scenario.
+  [ADR 0013](./adr/0013-pkg-client-architecture.md).
 
 ## v2 M2 — Batched-fsync mode
 **Branch:** `feat/batched-fsync`
@@ -188,7 +199,7 @@ Branch convention: `feat/<milestone-slug>`.
 
 | Milestone | Title | Status | PR | Tag |
 |---|---|---|---|---|
-| v2 M1 | Dedupe LRU persistence | ⬜ | — | — |
+| v2 M1 | Dedupe LRU persistence | 🔄 branch | — | — |
 | v2 M2 | Batched-fsync mode | ⬜ | — | — |
 | v2 M3 | HELLO + AUTH + TLS | ⬜ | — | — |
 | v2 M4 | Partitions (single-node) | ⬜ | — | — |
