@@ -31,8 +31,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("toymq-tui", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	addr := fs.String("addr", config.DefaultAddr, "broker address")
+	authToken := fs.String("auth-token", "", "bearer token sent in the HELLO handshake")
+	useTLS := fs.Bool("tls", false, "dial over TLS")
+	tlsCA := fs.String("tls-ca", "", "PEM CA file trusted for -tls (empty = system roots)")
+	tlsInsecure := fs.Bool("tls-insecure", false, "skip TLS verification (dev/self-signed only)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: toymq-tui [--addr host:port]")
+		fmt.Fprintln(stderr, "usage: toymq-tui [--addr host:port] [--tls] [--auth-token t]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -42,8 +46,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	var opts []client.Option
+	if *authToken != "" {
+		opts = append(opts, client.WithAuth(*authToken))
+	}
+	if *useTLS || *tlsCA != "" || *tlsInsecure {
+		tlsCfg, err := client.TLSConfig(*tlsCA, *tlsInsecure)
+		if err != nil {
+			return fmt.Errorf("tls: %w", err)
+		}
+		opts = append(opts, client.WithTLS(tlsCfg))
+	}
+
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-	c, err := client.Dial(dialCtx, *addr)
+	c, err := client.Dial(dialCtx, *addr, opts...)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)

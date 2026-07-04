@@ -19,6 +19,7 @@ func runAck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("ack", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	addr := fs.String("addr", config.DefaultAddr, "broker address")
+	conn := registerConnFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: toymqctl ack [flags] <topic> <consumer-id> <msg-id>")
 		fs.PrintDefaults()
@@ -40,8 +41,14 @@ func runAck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
+	opts, err := conn.dialOptions()
+	if err != nil {
+		fmt.Fprintf(stderr, "toymqctl ack: %v\n", err)
+		return exitUsage
+	}
+
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-	c, err := client.Dial(dialCtx, *addr)
+	c, err := client.Dial(dialCtx, *addr, opts...)
 	cancel()
 	if err != nil {
 		fmt.Fprintf(stderr, "toymqctl ack: dial: %v\n", err)
