@@ -30,6 +30,12 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.DedupeCap != DefaultDedupeCap {
 		t.Errorf("DedupeCap = %d, want %d", cfg.DedupeCap, DefaultDedupeCap)
 	}
+	if cfg.FsyncMode != DefaultFsyncMode {
+		t.Errorf("FsyncMode = %q, want %q", cfg.FsyncMode, DefaultFsyncMode)
+	}
+	if cfg.FsyncInterval != DefaultFsyncInterval {
+		t.Errorf("FsyncInterval = %v, want %v", cfg.FsyncInterval, DefaultFsyncInterval)
+	}
 }
 
 func TestParseOverrides(t *testing.T) {
@@ -40,10 +46,18 @@ func TestParseOverrides(t *testing.T) {
 		"-log-format", "json",
 		"-shutdown-timeout", "2s",
 		"-dedupe-cap", "128",
+		"-fsync", "batched",
+		"-fsync-interval", "10ms",
 	}
 	cfg, err := Parse(args, io.Discard)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.FsyncMode != "batched" {
+		t.Errorf("FsyncMode = %q, want batched", cfg.FsyncMode)
+	}
+	if cfg.FsyncInterval != 10*time.Millisecond {
+		t.Errorf("FsyncInterval = %v, want 10ms", cfg.FsyncInterval)
 	}
 	if cfg.Addr != "127.0.0.1:9999" {
 		t.Errorf("Addr = %q", cfg.Addr)
@@ -79,6 +93,9 @@ func TestParseValidation(t *testing.T) {
 		{"negative shutdown timeout", []string{"-shutdown-timeout", "-1s"}, "shutdown-timeout"},
 		{"zero dedupe cap", []string{"-dedupe-cap", "0"}, "dedupe-cap"},
 		{"negative dedupe cap", []string{"-dedupe-cap", "-1"}, "dedupe-cap"},
+		{"bad fsync mode", []string{"-fsync", "sometimes"}, "fsync"},
+		{"batched zero interval", []string{"-fsync", "batched", "-fsync-interval", "0"}, "fsync-interval"},
+		{"batched negative interval", []string{"-fsync", "batched", "-fsync-interval", "-1ms"}, "fsync-interval"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

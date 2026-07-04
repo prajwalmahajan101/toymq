@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/prajwalmahajan101/toymq/internal/wal"
 )
 
 // Config is the validated flag bundle passed from the broker binary
@@ -18,6 +20,12 @@ type Config struct {
 	LogFormat       string
 	ShutdownTimeout time.Duration
 	DedupeCap       int
+
+	// FsyncMode selects the WAL durability strategy (ADR 0019):
+	// per-message (default) | batched | none. FsyncInterval is the
+	// group-commit window and applies only to batched.
+	FsyncMode     string
+	FsyncInterval time.Duration
 
 	// Observability (ADR 0015). Empty MetricsAddr disables the
 	// HTTP /metrics + /healthz endpoint. Empty OTLPEndpoint
@@ -38,6 +46,8 @@ const (
 	DefaultLogFormat        = "text"
 	DefaultShutdownTimeout  = 5 * time.Second
 	DefaultDedupeCap        = 4096
+	DefaultFsyncMode        = "per-message"
+	DefaultFsyncInterval    = wal.DefaultSyncInterval
 	DefaultMetricsAddr      = ""
 	DefaultOTLPEndpoint     = ""
 	DefaultTraceSampleRatio = 0.05
@@ -63,6 +73,8 @@ func Parse(args []string, stderr io.Writer) (*Config, error) {
 	fs.StringVar(&cfg.LogFormat, "log-format", DefaultLogFormat, "text|json")
 	fs.DurationVar(&cfg.ShutdownTimeout, "shutdown-timeout", DefaultShutdownTimeout, "graceful drain budget")
 	fs.IntVar(&cfg.DedupeCap, "dedupe-cap", DefaultDedupeCap, "per-topic dedupe LRU size")
+	fs.StringVar(&cfg.FsyncMode, "fsync", DefaultFsyncMode, "WAL durability: per-message|batched|none")
+	fs.DurationVar(&cfg.FsyncInterval, "fsync-interval", DefaultFsyncInterval, "group-commit window for -fsync=batched")
 	fs.StringVar(&cfg.MetricsAddr, "metrics-addr", DefaultMetricsAddr, "Prometheus /metrics listen address (empty disables)")
 	fs.StringVar(&cfg.OTLPEndpoint, "otlp-endpoint", DefaultOTLPEndpoint, "OTLP gRPC tracing endpoint (empty disables tracing)")
 	fs.Float64Var(&cfg.TraceSampleRatio, "trace-sample-ratio", DefaultTraceSampleRatio, "fraction of root spans to sample [0..1]")
@@ -96,6 +108,12 @@ func (c *Config) validate() error {
 	}
 	if c.DedupeCap <= 0 {
 		return fmt.Errorf("dedupe-cap %d: must be > 0", c.DedupeCap)
+	}
+	if _, err := wal.ParseSyncMode(c.FsyncMode); err != nil {
+		return fmt.Errorf("fsync %q: %w", c.FsyncMode, err)
+	}
+	if c.FsyncMode == "batched" && c.FsyncInterval <= 0 {
+		return fmt.Errorf("fsync-interval %v: must be > 0 for -fsync=batched", c.FsyncInterval)
 	}
 	if c.TraceSampleRatio < 0 || c.TraceSampleRatio > 1 {
 		return fmt.Errorf("trace-sample-ratio %v: must be in [0,1]", c.TraceSampleRatio)
