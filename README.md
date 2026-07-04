@@ -149,10 +149,11 @@ ends with `\n`. Bytes between framing are arbitrary.
 | Verb | Wire shape | Notes |
 |---|---|---|
 | `HELLO` | `HELLO <version> [AUTH <token>]\n` | **First line on every connection** (v2.0). Server replies `HELLO <version> OK\n`. `AUTH` is required when the broker enables tokens. See [Handshake, auth, and TLS](#handshake-auth-and-tls-v20). |
-| `PUB` | `PUB <topic> <key> <len>\n<payload>\n` | `<key>` is `-` for no dedupe key. `<len>` is the byte length of `<payload>`. |
-| `SUB` | `SUB <topic> <consumer-id>\n` | Registers the consumer; broker starts replaying from `lastAcked + 1`. |
-| `ACK` | `ACK <consumer-id> <msg-id>\n` | Confirms delivery; advances `lastAcked` when the prefix is contiguous. |
-| `NACK` | `NACK <consumer-id> <msg-id>\n` | Returns the msg to pending; redelivered on the next `runDelivery` iteration. |
+| `CREATE` | `CREATE <topic> PARTITIONS <n>\n` | Creates `<topic>` with `<n>` partitions (v2 M4). Idempotent for the same count; a different count is an `ERR`. Auto-created topics use `--default-partitions`. |
+| `PUB` | `PUB <topic> <key> <routing-key> <len>\n<payload>\n` | `<key>` is the dedupe key (`-` = none). `<routing-key>` (`-` = none) hashes to a partition (`fnv1a % N`); empty round-robins. `PUB <topic>#<n> …` pins partition `n`. `<len>` is the payload byte length. |
+| `SUB` | `SUB <topic> <consumer-id>\n` | `<topic>` = all partitions (fan-in); `<topic>#<n>` = one; `<topic>#*` = all. Replays each partition from its `lastAcked + 1`. |
+| `ACK` | `ACK <consumer-id> <partition> <msg-id>\n` | Confirms delivery on `<partition>` (MsgIDs are partition-local); advances that partition's `lastAcked` when the prefix is contiguous. |
+| `NACK` | `NACK <consumer-id> <partition> <msg-id>\n` | Returns the msg to pending; redelivered on the next `runDelivery` iteration. |
 
 ### Responses (broker → client)
 
@@ -161,7 +162,7 @@ ends with `\n`. Bytes between framing are arbitrary.
 | `OK` | `OK <msg-id>\n` | Success. For PUB the id is freshly assigned; for SUB it is `0` (placeholder); for ACK/NACK it echoes the target id. |
 | `DUP` | `DUP <msg-id>\n` | Dedupe LRU hit; the original assignment for this key is returned. No new WAL write. |
 | `ERR` | `ERR <code> <reason>\n` | Server error. `<code>` is a stable token (`PUB_FAILED`, `NO_SUB`, etc.); `<reason>` is human text. |
-| `MSG` | `MSG <topic> <msg-id> <len>\n<payload>\n` | Async push from a subscription. Order matches `msg-id`. |
+| `MSG` | `MSG <topic> <partition> <msg-id> <len>\n<payload>\n` | Async push from a subscription. `<partition>` identifies the source partition (echo it back in `ACK`/`NACK`). Order matches `msg-id` within a partition. |
 
 Source of truth: [`internal/proto/parser.go`](./internal/proto/parser.go),
 [`internal/proto/response.go`](./internal/proto/response.go).
@@ -197,21 +198,61 @@ Skip the client and talk to the broker directly with `nc`. Prepend the
 # In one terminal, start the broker.
 toymq --data-dir /tmp/toymq-nc
 
-# In another — HELLO first, then the command:
-printf 'HELLO 1\nPUB orders - 5\nhello\n' | nc -q1 localhost 6789
+# In another — HELLO first, then the command (dedupe-key and routing-key both -):
+printf 'HELLO 1\nPUB orders - - 5\nhello\n' | nc -q1 localhost 6789
 # HELLO 1 OK
 # OK 0
 
-printf 'HELLO 1\nSUB orders raw-consumer\nACK raw-consumer 0\n' | nc -q1 localhost 6789
+printf 'HELLO 1\nSUB orders raw-consumer\nACK raw-consumer 0 0\n' | nc -q1 localhost 6789
 # HELLO 1 OK
 # OK 0
-# MSG orders 0 5
+# MSG orders 0 0 5
 # hello
 # OK 0
 ```
 
 The `-q1` is `ncat`'s "quit after 1 second of EOF on stdin" — needed
 because the broker keeps the conn open for streaming.
+
+---
+
+## Partitions (v2 M4)
+
+A topic can hold `N` partitions, each an independent ordered log. Ordering
+is total **within** a partition and unordered **across** partitions — the
+classic trade of global order for parallelism. See
+[ADR 0021](./docs/adr/0021-partitions-single-node.md).
+
+```bash
+# Create a topic with 4 partitions (or start the broker with
+# --default-partitions 4 to apply it to every auto-created topic).
+toymqctl create orders -partitions 4
+
+# Route by key: the same routing key always lands on the same partition.
+toymqctl pub -routing-key user-42 orders "hello"     # hashed
+toymqctl pub -partition 3        orders "pinned"      # explicit partition
+toymqctl pub                     orders "spread"       # keyless → round-robin
+
+# Consume one partition, or fan in from all.
+toymqctl sub orders#3 c1     # just partition 3
+toymqctl sub orders#* c1     # all partitions (equivalent to `sub orders c1`)
+```
+
+On disk, each partition is its own WAL segment under
+`data/topics/<name>/<p>/000000.log` with a `meta.json` recording the count.
+A **1-partition topic keeps the pre-M4 flat layout byte-for-byte**
+(`data/topics/<name>/000000.log`, no `meta.json`), so existing data dirs
+open unchanged.
+
+**Throughput.** Partitions let publishes and deliveries run in parallel
+across cores. `toymq-bench -partitions N` creates the topic and spreads
+keyless publishes round-robin so you can compare partitioned vs single-log
+runs:
+
+```bash
+toymq-bench -producers 8 -msgs 100000 -partitions 1   # single log
+toymq-bench -producers 8 -msgs 100000 -partitions 8   # 8 parallel logs
+```
 
 ---
 
