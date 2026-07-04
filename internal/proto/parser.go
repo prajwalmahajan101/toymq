@@ -39,9 +39,45 @@ func ParseCommandLine(line string, br *bufio.Reader, maxPayload int) (Command, e
 
 	case "NACK":
 		return parseNack(fields)
+
+	case "CREATE":
+		return parseCreate(fields)
 	default:
 		return nil, fmt.Errorf("%w: Unknown verb %q", ErrInvalidCommand, fields[0])
 	}
+}
+
+// parseTopicPartition splits a wire topic token into its base topic and
+// an optional partition selector (ADR 0021):
+//
+//	orders    -> ("orders", 0, star=false, explicit=false)
+//	orders#3  -> ("orders", 3, star=false, explicit=true)
+//	orders#*  -> ("orders", 0, star=true,  explicit=false)
+//
+// A malformed suffix (empty base, empty/negative/non-numeric partition,
+// or more than one '#') is an error.
+func parseTopicPartition(tok string) (topic string, partition int, star, explicit bool, err error) {
+	base, suffix, hasHash := strings.Cut(tok, "#")
+	if !hasHash {
+		if tok == "" {
+			return "", 0, false, false, fmt.Errorf("%w: empty topic", ErrInvalidCommand)
+		}
+		return tok, 0, false, false, nil
+	}
+	if base == "" {
+		return "", 0, false, false, fmt.Errorf("%w: empty topic in %q", ErrInvalidCommand, tok)
+	}
+	if strings.ContainsRune(suffix, '#') {
+		return "", 0, false, false, fmt.Errorf("%w: malformed partition suffix in %q", ErrInvalidCommand, tok)
+	}
+	if suffix == "*" {
+		return base, 0, true, false, nil
+	}
+	n, convErr := strconv.Atoi(suffix)
+	if convErr != nil || n < 0 {
+		return "", 0, false, false, fmt.Errorf("%w: partition %q in %q", ErrInvalidCommand, suffix, tok)
+	}
+	return base, n, false, true, nil
 }
 
 // ReadHello reads one line and parses it as a HELLO handshake frame.
@@ -102,17 +138,27 @@ func readLine(br *bufio.Reader) (string, error) {
 }
 
 func parsePub(br *bufio.Reader, fields []string, maxPayload int) (Command, error) {
-	if len(fields) != 4 {
-		return nil, fmt.Errorf("%w: PUB expects 3 args, got %d", ErrInvalidCommand, len(fields)-1)
+	if len(fields) != 5 {
+		return nil, fmt.Errorf("%w: PUB expects 4 args (topic dedupe-key routing-key payload_len), got %d", ErrInvalidCommand, len(fields)-1)
 	}
-	topic := fields[1]
-	key := fields[2]
+	topic, partition, star, explicit, err := parseTopicPartition(fields[1])
+	if err != nil {
+		return nil, err
+	}
+	if star {
+		return nil, fmt.Errorf("%w: PUB cannot target %q (all partitions)", ErrInvalidCommand, fields[1])
+	}
 
+	key := fields[2]
 	if key == "-" {
 		key = ""
 	}
+	routingKey := fields[3]
+	if routingKey == "-" {
+		routingKey = ""
+	}
 
-	payloadLen, err := strconv.ParseUint(fields[3], 10, 64)
+	payloadLen, err := strconv.ParseUint(fields[4], 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("%w: PUB payload_len: %v", ErrInvalidCommand, err)
 	}
@@ -132,35 +178,66 @@ func parsePub(br *bufio.Reader, fields []string, maxPayload int) (Command, error
 	if nl != '\n' {
 		return nil, ErrBadFraming
 	}
-	return PubCommand{Topic: topic, DedupeKey: key, Payload: payload}, nil
+	return PubCommand{
+		Topic:        topic,
+		DedupeKey:    key,
+		RoutingKey:   routingKey,
+		Partition:    partition,
+		PartitionSet: explicit,
+		Payload:      payload,
+	}, nil
 }
 
 func parseSub(fields []string) (Command, error) {
 	if len(fields) != 3 {
 		return nil, fmt.Errorf("%w: SUB expect 2 args, got %d", ErrInvalidCommand, len(fields)-1)
 	}
-
-	return SubCommand{Topic: fields[1], ConsumerID: fields[2]}, nil
+	topic, partition, star, explicit, err := parseTopicPartition(fields[1])
+	if err != nil {
+		return nil, err
+	}
+	// SUB <topic> (no suffix) and SUB <topic>#* both mean all partitions.
+	all := star || !explicit
+	return SubCommand{Topic: topic, Partition: partition, AllPartitions: all, ConsumerID: fields[2]}, nil
 }
 
 func parseAck(fields []string) (Command, error) {
-	if len(fields) != 3 {
-		return nil, fmt.Errorf("%w: ACK expect 2 args, got %d", ErrInvalidCommand, len(fields)-1)
+	if len(fields) != 4 {
+		return nil, fmt.Errorf("%w: ACK expect 3 args (consumer-id partition msg_id), got %d", ErrInvalidCommand, len(fields)-1)
 	}
-	id, err := strconv.ParseUint(fields[2], 10, 64)
+	partition, err := strconv.Atoi(fields[2])
+	if err != nil || partition < 0 {
+		return nil, fmt.Errorf("%w: ACK partition %q", ErrInvalidCommand, fields[2])
+	}
+	id, err := strconv.ParseUint(fields[3], 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("%w: ACK msg_id: %w", ErrInvalidCommand, err)
 	}
-	return AckCommand{ConsumerID: fields[1], MsgID: id}, nil
+	return AckCommand{ConsumerID: fields[1], Partition: partition, MsgID: id}, nil
 }
 
 func parseNack(fields []string) (Command, error) {
-	if len(fields) != 3 {
-		return nil, fmt.Errorf("%w: NACK expect 2 args, got %d", ErrInvalidCommand, len(fields)-1)
+	if len(fields) != 4 {
+		return nil, fmt.Errorf("%w: NACK expect 3 args (consumer-id partition msg_id), got %d", ErrInvalidCommand, len(fields)-1)
 	}
-	id, err := strconv.ParseUint(fields[2], 10, 64)
+	partition, err := strconv.Atoi(fields[2])
+	if err != nil || partition < 0 {
+		return nil, fmt.Errorf("%w: NACK partition %q", ErrInvalidCommand, fields[2])
+	}
+	id, err := strconv.ParseUint(fields[3], 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("%w: NACK msg_id: %w", ErrInvalidCommand, err)
 	}
-	return NackCommand{ConsumerID: fields[1], MsgID: id}, nil
+	return NackCommand{ConsumerID: fields[1], Partition: partition, MsgID: id}, nil
+}
+
+func parseCreate(fields []string) (Command, error) {
+	if len(fields) != 4 || fields[2] != "PARTITIONS" {
+		return nil, fmt.Errorf("%w: CREATE expects <topic> PARTITIONS <n>", ErrInvalidCommand)
+	}
+	n, err := strconv.Atoi(fields[3])
+	if err != nil || n < 1 {
+		return nil, fmt.Errorf("%w: CREATE partitions %q", ErrInvalidCommand, fields[3])
+	}
+	return CreateCommand{Topic: fields[1], Partitions: n}, nil
 }

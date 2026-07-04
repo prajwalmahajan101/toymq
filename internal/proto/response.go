@@ -37,13 +37,21 @@ func WriteHelloOK(bw *bufio.Writer, version int) error {
 	return bw.Flush()
 }
 
-// WriteMsg writes one delivery frame: "MSG <topic> <msgID>
-// <payloadLen>\n<payload>\n" and flushes.
-func WriteMsg(bw *bufio.Writer, topic string, msgID uint64, payload []byte) error {
+// WriteMsg writes one delivery frame: "MSG <topic> <partition> <msgID>
+// <payloadLen>\n<payload>\n" and flushes. The partition is explicit because
+// MsgIDs are partition-local (ADR 0021) and an all-partitions consumer must
+// know which partition to ACK.
+func WriteMsg(bw *bufio.Writer, topic string, partition int, msgID uint64, payload []byte) error {
 	if _, err := bw.WriteString("MSG "); err != nil {
 		return err
 	}
 	if _, err := bw.WriteString(topic); err != nil {
+		return err
+	}
+	if err := bw.WriteByte(' '); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString(strconv.Itoa(partition)); err != nil {
 		return err
 	}
 	if err := bw.WriteByte(' '); err != nil {
