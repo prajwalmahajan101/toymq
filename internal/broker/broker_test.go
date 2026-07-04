@@ -521,9 +521,9 @@ func TestDedupeIndexRebuiltFromWALOnRestart(t *testing.T) {
 // stay evicted after it.
 func TestDedupeRebuildRespectsLRUCap(t *testing.T) {
 	dir := t.TempDir()
-	const cap = 3
+	const dedupeCap = 3
 
-	b1, err := New(dir, cap)
+	b1, err := New(dir, dedupeCap)
 	if err != nil {
 		t.Fatalf("New b1: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestDedupeRebuildRespectsLRUCap(t *testing.T) {
 		t.Fatalf("Close b1: %v", err)
 	}
 
-	b2, err := New(dir, cap)
+	b2, err := New(dir, dedupeCap)
 	if err != nil {
 		t.Fatalf("New b2: %v", err)
 	}
@@ -546,12 +546,12 @@ func TestDedupeRebuildRespectsLRUCap(t *testing.T) {
 		t.Fatalf("getOrCreateTopic: %v", err)
 	}
 	if _, ok := top.dedupe.Lookup("key-0"); ok {
-		t.Errorf("key-0 present after restart; expected it to be evicted (cap=%d)", cap)
+		t.Errorf("key-0 present after restart; expected it to be evicted (cap=%d)", dedupeCap)
 	}
 	for i := 1; i < 4; i++ {
 		key := "key-" + string(rune('0'+i))
 		if _, ok := top.dedupe.Lookup(key); !ok {
-			t.Errorf("%s missing after restart; expected retained (cap=%d)", key, cap)
+			t.Errorf("%s missing after restart; expected retained (cap=%d)", key, dedupeCap)
 		}
 	}
 }
