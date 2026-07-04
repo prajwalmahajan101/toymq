@@ -50,7 +50,7 @@ func setupBroker(t *testing.T) *broker.Broker {
 func runSession(t *testing.T, ctx context.Context, b *broker.Broker, serverConn net.Conn) <-chan struct{} {
 	t.Helper()
 	done := make(chan struct{})
-	sess := NewSession(serverConn, b)
+	sess := NewSession(serverConn, b, authConfig{})
 	go func() {
 		defer close(done)
 		sess.Run(ctx)
@@ -393,5 +393,144 @@ func TestSessionGoroutineLeak(t *testing.T) {
 	now := runtime.NumGoroutine()
 	if now > baseline+2 {
 		t.Fatalf("goroutine leak: baseline=%d now=%d", baseline, now)
+	}
+}
+
+// --- v2 M3: HELLO handshake + auth (ADR 0020) ---
+
+func runSessionAuth(t *testing.T, ctx context.Context, b *broker.Broker, serverConn net.Conn, auth authConfig) <-chan struct{} {
+	t.Helper()
+	done := make(chan struct{})
+	sess := NewSession(serverConn, b, auth)
+	go func() {
+		defer close(done)
+		sess.Run(ctx)
+	}()
+	return done
+}
+
+func TestHandshakeRequiredAcceptsHello(t *testing.T) {
+	b := setupBroker(t)
+	clientConn, serverConn := net.Pipe()
+	done := runSessionAuth(t, t.Context(), b, serverConn, authConfig{requireHello: true})
+
+	br := bufio.NewReader(clientConn)
+	go clientConn.Write([]byte("HELLO 1\nPUB orders - 5\nhello\n"))
+
+	if line := readLine(t, br); line != "HELLO 1 OK" {
+		t.Fatalf("handshake resp = %q, want HELLO 1 OK", line)
+	}
+	if line := readLine(t, br); !strings.HasPrefix(line, "OK ") {
+		t.Fatalf("PUB after handshake = %q, want OK", line)
+	}
+	clientConn.Close()
+	<-done
+}
+
+func TestHandshakeRequiredRejectsMissingHello(t *testing.T) {
+	b := setupBroker(t)
+	clientConn, serverConn := net.Pipe()
+	done := runSessionAuth(t, t.Context(), b, serverConn, authConfig{requireHello: true})
+
+	br := bufio.NewReader(clientConn)
+	go clientConn.Write([]byte("PUB orders - 5\nhello\n"))
+
+	line := readLine(t, br)
+	if !strings.HasPrefix(line, "ERR HELLO") {
+		t.Fatalf("missing-HELLO resp = %q, want ERR HELLO ...", line)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("session did not close after HELLO rejection")
+	}
+	clientConn.Close()
+}
+
+func TestHandshakeVersionDowngrade(t *testing.T) {
+	b := setupBroker(t)
+	clientConn, serverConn := net.Pipe()
+	done := runSessionAuth(t, t.Context(), b, serverConn, authConfig{requireHello: true})
+
+	br := bufio.NewReader(clientConn)
+	go clientConn.Write([]byte("HELLO 2\n"))
+	if line := readLine(t, br); line != "HELLO 1 OK" {
+		t.Fatalf("HELLO 2 negotiated = %q, want HELLO 1 OK (server max)", line)
+	}
+	clientConn.Close()
+	<-done
+}
+
+func TestHandshakeAuthGoodAndBadToken(t *testing.T) {
+	auth := authConfig{requireHello: true, tokens: []string{"good-token", "other"}}
+
+	t.Run("good", func(t *testing.T) {
+		b := setupBroker(t)
+		clientConn, serverConn := net.Pipe()
+		done := runSessionAuth(t, t.Context(), b, serverConn, auth)
+		br := bufio.NewReader(clientConn)
+		go clientConn.Write([]byte("HELLO 1 AUTH good-token\n"))
+		if line := readLine(t, br); line != "HELLO 1 OK" {
+			t.Fatalf("good token resp = %q, want HELLO 1 OK", line)
+		}
+		clientConn.Close()
+		<-done
+	})
+
+	t.Run("bad", func(t *testing.T) {
+		b := setupBroker(t)
+		clientConn, serverConn := net.Pipe()
+		done := runSessionAuth(t, t.Context(), b, serverConn, auth)
+		br := bufio.NewReader(clientConn)
+		go clientConn.Write([]byte("HELLO 1 AUTH wrong\n"))
+		if line := readLine(t, br); !strings.HasPrefix(line, "ERR AUTH") {
+			t.Fatalf("bad token resp = %q, want ERR AUTH", line)
+		}
+		<-done
+		clientConn.Close()
+	})
+
+	t.Run("missing token", func(t *testing.T) {
+		b := setupBroker(t)
+		clientConn, serverConn := net.Pipe()
+		done := runSessionAuth(t, t.Context(), b, serverConn, auth)
+		br := bufio.NewReader(clientConn)
+		go clientConn.Write([]byte("HELLO 1\n"))
+		if line := readLine(t, br); !strings.HasPrefix(line, "ERR AUTH") {
+			t.Fatalf("no token resp = %q, want ERR AUTH", line)
+		}
+		<-done
+		clientConn.Close()
+	})
+}
+
+func TestHandshakeCompatModeAllowsCommandFirst(t *testing.T) {
+	b := setupBroker(t)
+	clientConn, serverConn := net.Pipe()
+	// requireHello:false — a client that skips HELLO still works.
+	done := runSessionAuth(t, t.Context(), b, serverConn, authConfig{requireHello: false})
+
+	br := bufio.NewReader(clientConn)
+	go clientConn.Write([]byte("PUB orders - 5\nhello\n"))
+	if line := readLine(t, br); !strings.HasPrefix(line, "OK ") {
+		t.Fatalf("compat PUB resp = %q, want OK", line)
+	}
+	clientConn.Close()
+	<-done
+}
+
+func TestCheckTokenConstantTimeCorrectness(t *testing.T) {
+	a := authConfig{tokens: []string{"alpha", "bravo"}}
+	if !a.checkToken("alpha") || !a.checkToken("bravo") {
+		t.Fatal("valid tokens must match")
+	}
+	if a.checkToken("charlie") || a.checkToken("") || a.checkToken("alph") {
+		t.Fatal("invalid tokens must not match")
+	}
+	if (authConfig{}).authEnabled() {
+		t.Fatal("zero authConfig must have auth disabled")
+	}
+	if (authConfig{}).checkToken("anything") {
+		t.Fatal("disabled auth must reject all tokens")
 	}
 }
