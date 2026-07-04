@@ -21,6 +21,22 @@ func WriteOK(bw *bufio.Writer, msgID uint64) error {
 	return bw.Flush()
 }
 
+// WriteHelloOK writes "HELLO <version> OK\n" and flushes — the server's
+// accepting handshake response, echoing the negotiated wire version
+// (ADR 0020).
+func WriteHelloOK(bw *bufio.Writer, version int) error {
+	if _, err := bw.WriteString("HELLO "); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString(strconv.Itoa(version)); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString(" OK\n"); err != nil {
+		return err
+	}
+	return bw.Flush()
+}
+
 // WriteMsg writes one delivery frame: "MSG <topic> <msgID>
 // <payloadLen>\n<payload>\n" and flushes.
 func WriteMsg(bw *bufio.Writer, topic string, msgID uint64, payload []byte) error {
