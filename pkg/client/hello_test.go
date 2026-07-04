@@ -114,7 +114,7 @@ func TestDialWithTLSRoundTrip(t *testing.T) {
 	}
 	defer c.Close()
 
-	id, dup, err := c.Pub(context.Background(), "orders", "k1", []byte("secure"))
+	id, dup, err := c.Pub(context.Background(), "orders", "k1", "", []byte("secure"))
 	if err != nil {
 		t.Fatalf("Pub over TLS: %v", err)
 	}

@@ -40,8 +40,8 @@ func TestReadFrame_ERR(t *testing.T) {
 }
 
 func TestReadFrame_MSG(t *testing.T) {
-	f := parse(t, "MSG orders 9 5\nhello\n")
-	if f.kind != frameMsg || f.msgTopic != "orders" || f.msgID != 9 || string(f.payload) != "hello" {
+	f := parse(t, "MSG orders 2 9 5\nhello\n")
+	if f.kind != frameMsg || f.msgTopic != "orders" || f.msgPartition != 2 || f.msgID != 9 || string(f.payload) != "hello" {
 		t.Fatalf("got %+v payload=%q", f, f.payload)
 	}
 }

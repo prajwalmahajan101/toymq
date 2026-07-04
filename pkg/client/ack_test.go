@@ -13,7 +13,7 @@ func TestAck_RemovesFromBacklog(t *testing.T) {
 	defer pub.Close()
 
 	for i := range 3 {
-		if _, _, err := pub.Pub(context.Background(), "orders", "", []byte{byte('a' + i)}); err != nil {
+		if _, _, err := pub.Pub(context.Background(), "orders", "", "", []byte{byte('a' + i)}); err != nil {
 			t.Fatalf("Pub: %v", err)
 		}
 	}
@@ -51,7 +51,7 @@ func TestNack_Redelivers(t *testing.T) {
 
 	pub, _ := Dial(context.Background(), addr)
 	defer pub.Close()
-	if _, _, err := pub.Pub(context.Background(), "orders", "", []byte("x")); err != nil {
+	if _, _, err := pub.Pub(context.Background(), "orders", "", "", []byte("x")); err != nil {
 		t.Fatalf("Pub: %v", err)
 	}
 
@@ -87,7 +87,7 @@ func TestClient_Ack_PublicMethod(t *testing.T) {
 
 	pub, _ := Dial(context.Background(), addr)
 	defer pub.Close()
-	id, _, err := pub.Pub(context.Background(), "orders", "", []byte("x"))
+	id, _, err := pub.Pub(context.Background(), "orders", "", "", []byte("x"))
 	if err != nil {
 		t.Fatalf("Pub: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestClient_Ack_PublicMethod(t *testing.T) {
 		t.Fatal("no delivery within 2s")
 	}
 
-	if err := sub.Ack(context.Background(), "cg", id); err != nil {
+	if err := sub.Ack(context.Background(), "cg", 0, id); err != nil {
 		t.Fatalf("Client.Ack: %v", err)
 	}
 	_ = sub.Close()
