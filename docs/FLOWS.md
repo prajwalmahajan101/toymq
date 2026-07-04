@@ -19,6 +19,14 @@ See also: [`ARCHITECTURE.md`](./ARCHITECTURE.md),
 [`PERSISTENCE.md`](./PERSISTENCE.md),
 [`CONCURRENCY.md`](./CONCURRENCY.md).
 
+> **Handshake first (v2.0).** Every connection opens with a
+> `HELLO <version> [AUTH <token>]` line answered by `HELLO 1 OK` (or
+> `ERR HELLO`/`ERR AUTH` + close) **before** any of the flows below. It is
+> handled synchronously by the Session reader, ahead of the Writer
+> goroutine, so a rejection is never dropped. Full detail in
+> [ADR 0020](./adr/0020-hello-auth-tls.md); with `--require-hello=false`
+> the first command line is accepted directly (migration mode).
+
 ---
 
 ## 1. PUB — happy path

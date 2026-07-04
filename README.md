@@ -10,19 +10,22 @@ every non-obvious decision. Not production software.
 
 What it does:
 
-- **PUB / SUB / ACK / NACK** over a line-oriented TCP protocol.
-- **Per-message fsync** durability — every `OK` is preceded by a
-  successful `fsync(2)`.
+- **PUB / SUB / ACK / NACK** over a line-oriented TCP protocol, opened
+  by a `HELLO` handshake ([ADR 0020](./docs/adr/0020-hello-auth-tls.md)).
+- **Durability modes** — per-message fsync (default), batched group
+  commit, or none ([ADR 0019](./docs/adr/0019-batched-fsync-mode.md)).
 - **At-least-once** delivery with visibility-timeout redelivery.
-- **Idempotent producer** support via in-memory dedupe LRU.
+- **Idempotent producer** support via a dedupe LRU rebuilt from the WAL
+  on restart ([ADR 0018](./docs/adr/0018-dedupe-recovery-from-wal.md)).
+- **Bearer-token AUTH + TLS** for off-host deployment (v2.0).
 - **Crash recovery** by full WAL scan with torn-tail truncation.
 
 What it doesn't:
 
-- No replication, no multi-node, no cluster.
-- No authentication, no TLS, no authorization.
+- No replication, no multi-node, no cluster (planned for v3 —
+  see [ROADMAP.md](./docs/ROADMAP.md)).
+- No per-topic authorization (bearer-token auth is broker-wide).
 - No dynamic topic management (topics auto-create on first publish).
-- No batched fsync (mode exists in plans but not implemented in v1).
 
 ---
 
@@ -145,6 +148,7 @@ ends with `\n`. Bytes between framing are arbitrary.
 
 | Verb | Wire shape | Notes |
 |---|---|---|
+| `HELLO` | `HELLO <version> [AUTH <token>]\n` | **First line on every connection** (v2.0). Server replies `HELLO <version> OK\n`. `AUTH` is required when the broker enables tokens. See [Handshake, auth, and TLS](#handshake-auth-and-tls-v20). |
 | `PUB` | `PUB <topic> <key> <len>\n<payload>\n` | `<key>` is `-` for no dedupe key. `<len>` is the byte length of `<payload>`. |
 | `SUB` | `SUB <topic> <consumer-id>\n` | Registers the consumer; broker starts replaying from `lastAcked + 1`. |
 | `ACK` | `ACK <consumer-id> <msg-id>\n` | Confirms delivery; advances `lastAcked` when the prefix is contiguous. |
@@ -162,19 +166,44 @@ ends with `\n`. Bytes between framing are arbitrary.
 Source of truth: [`internal/proto/parser.go`](./internal/proto/parser.go),
 [`internal/proto/response.go`](./internal/proto/response.go).
 
+### Handshake, auth, and TLS (v2.0)
+
+Every connection opens with a `HELLO <version> [AUTH <token>]` line; the
+server replies `HELLO 1 OK` (the negotiated version) or `ERR HELLO …` /
+`ERR AUTH …` and closes. `pkg/client` does this transparently. See
+[ADR 0020](./docs/adr/0020-hello-auth-tls.md).
+
+```bash
+# Secured broker: plaintext on :6789 AND TLS on :6790, with token auth.
+toymq --addr :6789 --tls-addr :6790 --tls-cert cert.pem --tls-key key.pem \
+      --auth-token-file tokens.txt   # one token per line
+
+# Client over TLS + auth.
+toymqctl --addr host:6790 --tls --tls-ca cert.pem --auth-token "$TOKEN" \
+         pub orders "hello"
+```
+
+**Migration.** `HELLO` is a wire break. Two paths:
+- Prepend one line to raw scripts: `HELLO 1` before your first command.
+- Or run `toymq --require-hello=false` for a plaintext migration window —
+  un-migrated clients that skip `HELLO` keep working until you upgrade them.
+
 ### What's on the wire?
 
-Skip the client and talk to the broker directly with `nc`:
+Skip the client and talk to the broker directly with `nc`. Prepend the
+`HELLO 1` line (or start the broker with `--require-hello=false`):
 
 ```bash
 # In one terminal, start the broker.
 toymq --data-dir /tmp/toymq-nc
 
-# In another:
-printf 'PUB orders - 5\nhello\n' | nc -q1 localhost 6789
+# In another — HELLO first, then the command:
+printf 'HELLO 1\nPUB orders - 5\nhello\n' | nc -q1 localhost 6789
+# HELLO 1 OK
 # OK 0
 
-printf 'SUB orders raw-consumer\nACK raw-consumer 0\n' | nc -q1 localhost 6789
+printf 'HELLO 1\nSUB orders raw-consumer\nACK raw-consumer 0\n' | nc -q1 localhost 6789
+# HELLO 1 OK
 # OK 0
 # MSG orders 0 5
 # hello
