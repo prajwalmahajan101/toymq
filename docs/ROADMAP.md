@@ -118,23 +118,29 @@ Branch convention: `feat/<milestone-slug>`.
 - **Exit:** batched group-commit shipped; `--fsync=per-message` durability
   contract unchanged.
 
-## v2 M3 — HELLO frame + AUTH + TLS  *(wire-breaking, gated behind v2.0)*
-**Branch:** `feat/hello-auth-tls`
-- New `HELLO <version> [AUTH token]` frame, must be the first line on
-  every connection. Servers respond `HELLO 1 OK` or `ERR`.
-- Bearer-style token auth — `--auth-token-file` flag points at a file
-  of one-token-per-line. Future ADR for per-topic ACLs (v2 M3.5
-  optional).
-- TLS via `crypto/tls` — `--tls-cert` / `--tls-key`. TLS-or-plain
-  selectable per listener; both can run side-by-side.
-- New ADR for the wire bump; `pkg/client` gains `WithAuth`, `WithTLS`
-  options.
-- **Owned risk test:** matrix — `{plain, tls} × {no-auth, auth} × {good,
-  bad token}`; integration suite gains a TLS scenario; `toymqctl` honours
-  the new flags.
-- **Exit:** broker safely reachable off-host; existing line-oriented
-  `redis-cli`-style scripts get a one-line `HELLO 1` prepend recipe in
-  the README.
+## v2 M3 — HELLO frame + AUTH + TLS ✅ *(shipped — [PR #9](https://github.com/prajwalmahajan101/toymq/pull/9); wire-breaking, gated behind v2.0)*
+**Branch:** `feat/hello-auth-tls` (merged) · **ADR:** [0020](./adr/0020-hello-auth-tls.md)
+- `HELLO <version> [AUTH <token>]` is the first line on every connection;
+  server replies `HELLO 1 OK` (negotiated version, leaving room for
+  `HELLO 2` in v3 M7) or `ERR HELLO`/`ERR AUTH` and closes. The handshake
+  is synchronous (before the async writer starts) so a rejection is never
+  dropped. HELLO is a handshake phase, not a `Command`.
+- **`--require-hello` toggle (default on):** `false` opens a plaintext
+  migration window — a non-HELLO first line is processed as a command.
+- Bearer-token auth via `--auth-token-file` (one token/line), matched with
+  `crypto/subtle.ConstantTimeCompare`, never logged. Per-topic ACLs (v2
+  M3.5) deferred; the token set is the hook.
+- TLS via `crypto/tls` — `--tls-cert`/`--tls-key` on a **separate
+  `--tls-addr`** listener that runs side-by-side with plain `--addr` (two
+  `Server` instances sharing one broker). `pkg/client` gains `WithAuth`,
+  `WithTLS`, a `TLSConfig` helper, and `ErrHandshake`/`ErrAuth`; the three
+  CLIs gain `--auth-token`/`--tls`/`--tls-ca`/`--tls-insecure`.
+- **Owned risk test:** the `{plain, tls} × {no-auth, auth} × {good, bad,
+  missing token}` matrix end-to-end via `pkg/client`, plus a
+  `--require-hello=false` compat test and a `toymqctl` auth round-trip.
+- **Client-plane only:** peer-plane (Raft) TLS is a separate v3 prerequisite.
+- **Exit:** broker safely reachable off-host; raw line-oriented scripts get
+  the one-line `HELLO 1` prepend recipe in the README.
 
 ## v2 M4 — Partitions (single-node)
 **Branch:** `feat/partitions`
@@ -206,7 +212,7 @@ Branch convention: `feat/<milestone-slug>`.
 |---|---|---|---|---|
 | v2 M1 | Dedupe LRU persistence | ✅ | [#5](https://github.com/prajwalmahajan101/toymq/pull/5) | — |
 | v2 M2 | Batched-fsync mode | ✅ | [#7](https://github.com/prajwalmahajan101/toymq/pull/7) | — |
-| v2 M3 | HELLO + AUTH + TLS | ⬜ | — | — |
+| v2 M3 | HELLO + AUTH + TLS | ✅ | [#9](https://github.com/prajwalmahajan101/toymq/pull/9) | — |
 | v2 M4 | Partitions (single-node) | ⬜ | — | — |
 | v2 M5 | Reader backpressure | ⬜ | — | — |
 | v2 M6 | Retention + DLQ + delay | ⬜ | — | — |
