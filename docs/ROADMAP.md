@@ -97,21 +97,26 @@ Branch convention: `feat/<milestone-slug>`.
 - **Exit:** closes the limitation in
   [ADR 0013](./adr/0013-pkg-client-architecture.md).
 
-## v2 M2 — Batched-fsync mode
-**Branch:** `feat/batched-fsync`
-- New `--fsync` flag: `per-message` (default, today's behaviour) |
-  `batched` | `none`.
-- Group commit: collect appends for up to `--fsync-interval` (default
-  5ms), fsync once, ack all waiters.
-- New ADR superseding [ADR 0002](./adr/0002-per-message-fsync.md) — the
-  per-message decision is preserved as the default; batched is opt-in.
-- **Owned risk test:** crash injection under `--fsync=batched` — SIGKILL
-  during a group-commit window; verify only **acked** PUBs survive (the
-  ones whose `OK` was sent after their batch's fsync returned).
-- **`cmd/toymq-bench`** gains the batched column the README has been
-  reserving since v1.0.
-- **Exit:** measurable throughput win in the bench harness; durability
-  contract unchanged for `--fsync=per-message`.
+## v2 M2 — Batched-fsync mode ✅ *(shipped — [PR #7](https://github.com/prajwalmahajan101/toymq/pull/7))*
+**Branch:** `feat/batched-fsync` (merged) · **ADR:** [0019](./adr/0019-batched-fsync-mode.md)
+- `--fsync` flag: `per-message` (default, today's behaviour) | `batched` |
+  `none`, plus `--fsync-interval` (default 5ms).
+- Group commit lives in the WAL (`wal.WithSyncMode`): a ticker-driven
+  committer collects appends for up to `--fsync-interval`, fsyncs once
+  (outside the write lock), then advances `committed` and releases all
+  waiters. `committed` still advances only after fsync, so consumers never
+  see un-durable data.
+- ADR 0019 supersedes [ADR 0002](./adr/0002-per-message-fsync.md) —
+  per-message stays the default; batched/none are opt-in.
+- **Owned risk test:** `test/chaos` gains a `CHAOS_FSYNC=batched` variant —
+  the SIGKILL soak runs in group-commit mode and asserts every `OK`'d PUB
+  survives (only un-acked, un-fsynced writes may be lost).
+- **`cmd/toymq-bench`** gains an `fsync=` run label so per-message vs
+  batched runs are self-documenting (the reserved batched column).
+- **`none` durability caveat:** survives a process SIGKILL (page cache),
+  **not** power loss / kernel panic — documented loudly in ADR 0019.
+- **Exit:** batched group-commit shipped; `--fsync=per-message` durability
+  contract unchanged.
 
 ## v2 M3 — HELLO frame + AUTH + TLS  *(wire-breaking, gated behind v2.0)*
 **Branch:** `feat/hello-auth-tls`
@@ -200,7 +205,7 @@ Branch convention: `feat/<milestone-slug>`.
 | Milestone | Title | Status | PR | Tag |
 |---|---|---|---|---|
 | v2 M1 | Dedupe LRU persistence | ✅ | [#5](https://github.com/prajwalmahajan101/toymq/pull/5) | — |
-| v2 M2 | Batched-fsync mode | ⬜ | — | — |
+| v2 M2 | Batched-fsync mode | ✅ | [#7](https://github.com/prajwalmahajan101/toymq/pull/7) | — |
 | v2 M3 | HELLO + AUTH + TLS | ⬜ | — | — |
 | v2 M4 | Partitions (single-node) | ⬜ | — | — |
 | v2 M5 | Reader backpressure | ⬜ | — | — |
