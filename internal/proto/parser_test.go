@@ -19,34 +19,54 @@ func TestReadCommandHappy(t *testing.T) {
 		want  Command
 	}{
 		{
-			name:  "PUB with key",
-			input: "PUB orders order-123 5\nhello\n",
-			want:  PubCommand{Topic: "orders", DedupeKey: "order-123", Payload: []byte("hello")},
+			name:  "PUB with keys",
+			input: "PUB orders order-123 user-9 5\nhello\n",
+			want:  PubCommand{Topic: "orders", DedupeKey: "order-123", RoutingKey: "user-9", Payload: []byte("hello")},
 		},
 		{
-			name:  "PUB no key (dash)",
-			input: "PUB orders - 5\nhello\n",
-			want:  PubCommand{Topic: "orders", DedupeKey: "", Payload: []byte("hello")},
+			name:  "PUB no keys (dash)",
+			input: "PUB orders - - 5\nhello\n",
+			want:  PubCommand{Topic: "orders", DedupeKey: "", RoutingKey: "", Payload: []byte("hello")},
+		},
+		{
+			name:  "PUB explicit partition",
+			input: "PUB orders#3 - - 5\nhello\n",
+			want:  PubCommand{Topic: "orders", Partition: 3, PartitionSet: true, Payload: []byte("hello")},
 		},
 		{
 			name:  "PUB empty payload",
-			input: "PUB orders - 0\n\n",
+			input: "PUB orders - - 0\n\n",
 			want:  PubCommand{Topic: "orders", DedupeKey: "", Payload: []byte{}},
 		},
 		{
-			name:  "SUB",
+			name:  "SUB all partitions",
 			input: "SUB orders consumer-1\n",
-			want:  SubCommand{Topic: "orders", ConsumerID: "consumer-1"},
+			want:  SubCommand{Topic: "orders", AllPartitions: true, ConsumerID: "consumer-1"},
+		},
+		{
+			name:  "SUB star",
+			input: "SUB orders#* consumer-1\n",
+			want:  SubCommand{Topic: "orders", AllPartitions: true, ConsumerID: "consumer-1"},
+		},
+		{
+			name:  "SUB single partition",
+			input: "SUB orders#2 consumer-1\n",
+			want:  SubCommand{Topic: "orders", Partition: 2, AllPartitions: false, ConsumerID: "consumer-1"},
 		},
 		{
 			name:  "ACK",
-			input: "ACK consumer-1 42\n",
-			want:  AckCommand{ConsumerID: "consumer-1", MsgID: 42},
+			input: "ACK consumer-1 0 42\n",
+			want:  AckCommand{ConsumerID: "consumer-1", Partition: 0, MsgID: 42},
 		},
 		{
 			name:  "NACK",
-			input: "NACK consumer-1 42\n",
-			want:  NackCommand{ConsumerID: "consumer-1", MsgID: 42},
+			input: "NACK consumer-1 1 42\n",
+			want:  NackCommand{ConsumerID: "consumer-1", Partition: 1, MsgID: 42},
+		},
+		{
+			name:  "CREATE",
+			input: "CREATE orders PARTITIONS 4\n",
+			want:  CreateCommand{Topic: "orders", Partitions: 4},
 		},
 	}
 
@@ -72,19 +92,26 @@ func TestReadCommandErrors(t *testing.T) {
 	}{
 		{"unknown verb", "FOO bar\n", ErrInvalidCommand},
 		{"PUB missing args", "PUB orders\n", ErrInvalidCommand},
-		{"PUB bad len", "PUB orders - notanumber\n", ErrInvalidCommand},
-		{"PUB short body", "PUB orders - 10\nhi\n", ErrShortBody},
-		{"PUB no trailing newline", "PUB orders - 2\nhi", ErrBadFraming},
+		{"PUB too few args", "PUB orders - 5\nhello\n", ErrInvalidCommand},
+		{"PUB bad len", "PUB orders - - notanumber\n", ErrInvalidCommand},
+		{"PUB short body", "PUB orders - - 10\nhi\n", ErrShortBody},
+		{"PUB no trailing newline", "PUB orders - - 2\nhi", ErrBadFraming},
+		{"PUB star partition", "PUB orders#* - - 5\nhello\n", ErrInvalidCommand},
+		{"PUB bad partition", "PUB orders#x - - 5\nhello\n", ErrInvalidCommand},
 		{"SUB missing arg", "SUB orders\n", ErrInvalidCommand},
-		{"ACK bad id", "ACK consumer-1 notanumber\n", ErrInvalidCommand},
+		{"SUB bad partition", "SUB orders#x c1\n", ErrInvalidCommand},
+		{"ACK bad id", "ACK consumer-1 0 notanumber\n", ErrInvalidCommand},
+		{"ACK bad partition", "ACK consumer-1 x 42\n", ErrInvalidCommand},
 		{"NACK missing arg", "NACK consumer-1\n", ErrInvalidCommand},
 		{"empty line", "\n", ErrInvalidCommand},
 		{"EOF mid-line", "PUB orders", ErrBadFraming},
-		{"ACK missing arg", "ACK consumer-1\n", ErrInvalidCommand},
-		{"ACK extra arg", "ACK c1 42 extra\n", ErrInvalidCommand},
-		{"NACK extra arg", "NACK c1 42 extra\n", ErrInvalidCommand},
-		{"NACK bad id", "NACK c1 notanumber\n", ErrInvalidCommand},
+		{"ACK missing arg", "ACK consumer-1 0\n", ErrInvalidCommand},
+		{"ACK extra arg", "ACK c1 0 42 extra\n", ErrInvalidCommand},
+		{"NACK extra arg", "NACK c1 0 42 extra\n", ErrInvalidCommand},
+		{"NACK bad id", "NACK c1 0 notanumber\n", ErrInvalidCommand},
 		{"SUB extra arg", "SUB t c1 extra\n", ErrInvalidCommand},
+		{"CREATE missing keyword", "CREATE orders 4\n", ErrInvalidCommand},
+		{"CREATE bad count", "CREATE orders PARTITIONS 0\n", ErrInvalidCommand},
 	}
 
 	for _, tc := range cases {
@@ -98,7 +125,7 @@ func TestReadCommandErrors(t *testing.T) {
 	}
 
 	t.Run("PUB payload exceeds max", func(t *testing.T) {
-		br := bufio.NewReader(strings.NewReader("PUB orders - 100\n" + strings.Repeat("x", 100) + "\n"))
+		br := bufio.NewReader(strings.NewReader("PUB orders - - 100\n" + strings.Repeat("x", 100) + "\n"))
 		_, err := ReadCommand(br, 50) // max=50, payload=100
 		if !errors.Is(err, ErrPayloadTooLarge) {
 			t.Errorf("err = %v, want ErrPayloadTooLarge", err)
@@ -162,7 +189,7 @@ func TestParseHello(t *testing.T) {
 func TestReadHelloFallsBackToLine(t *testing.T) {
 	// A non-HELLO first line returns ErrNotHello but hands back the raw
 	// line so the caller can process it as a command in compat mode.
-	br := bufio.NewReader(strings.NewReader("PUB orders - 5\nhello\n"))
+	br := bufio.NewReader(strings.NewReader("PUB orders - - 5\nhello\n"))
 	_, line, err := ReadHello(br)
 	if !errors.Is(err, ErrNotHello) {
 		t.Fatalf("err = %v, want ErrNotHello", err)
