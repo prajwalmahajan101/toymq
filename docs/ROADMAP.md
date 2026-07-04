@@ -142,7 +142,7 @@ Branch convention: `feat/<milestone-slug>`.
 - **Exit:** broker safely reachable off-host; raw line-oriented scripts get
   the one-line `HELLO 1` prepend recipe in the README.
 
-## v2 M4 — Partitions (single-node) ✅ *(shipped)*
+## v2 M4 — Partitions (single-node) ✅ *(shipped — [PR #11](https://github.com/prajwalmahajan101/toymq/pull/11))*
 **Branch:** `feat/partitions` · **ADR:** [0021](./adr/0021-partitions-single-node.md)
 - A topic holds `N` partitions, each an independent ordered log.
   **`Topic` became a thin router over a new `Partition` type** that owns
@@ -224,7 +224,7 @@ Branch convention: `feat/<milestone-slug>`.
 | v2 M1 | Dedupe LRU persistence | ✅ | [#5](https://github.com/prajwalmahajan101/toymq/pull/5) | — |
 | v2 M2 | Batched-fsync mode | ✅ | [#7](https://github.com/prajwalmahajan101/toymq/pull/7) | — |
 | v2 M3 | HELLO + AUTH + TLS | ✅ | [#9](https://github.com/prajwalmahajan101/toymq/pull/9) | — |
-| v2 M4 | Partitions (single-node) | ✅ | — | — |
+| v2 M4 | Partitions (single-node) | ✅ | [#11](https://github.com/prajwalmahajan101/toymq/pull/11) | — |
 | v2 M5 | Reader backpressure | ⬜ | — | — |
 | v2 M6 | Retention + DLQ + delay | ⬜ | — | — |
 | v2 M7 | traceparent + alerts | ⬜ | — | — |
