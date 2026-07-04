@@ -60,7 +60,7 @@ func writeTopicMeta(topicDir string, partitions int) error {
 		return fmt.Errorf("marshal meta: %w", err)
 	}
 	path := filepath.Join(topicDir, "meta.json")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
