@@ -168,3 +168,89 @@ func TestConcurrentAppend(t *testing.T) {
 		}
 	}
 }
+
+func TestRecoveryVisitorSeesGoodRecordsInOrder(t *testing.T) {
+	dir := t.TempDir()
+
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// Mix keyed and unkeyed records; the visitor must see every good
+	// record in ascending MsgID order regardless of key.
+	want := []Record{
+		{DedupeKey: "a", Payload: []byte("0")},
+		{Payload: []byte("1")},
+		{DedupeKey: "b", Payload: []byte("2")},
+		{DedupeKey: "c", Payload: []byte("3")},
+	}
+	for i, rec := range want {
+		if _, _, err := l.Append(rec); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var got []Record
+	l2, err := Open(dir, WithRecoveryVisitor(func(rec Record) {
+		got = append(got, rec)
+	}))
+	if err != nil {
+		t.Fatalf("Reopen: %v", err)
+	}
+	defer l2.Close()
+
+	if len(got) != len(want) {
+		t.Fatalf("visited %d records, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].MsgID != uint64(i) {
+			t.Errorf("record %d: MsgID = %d, want %d", i, got[i].MsgID, i)
+		}
+		if got[i].DedupeKey != want[i].DedupeKey {
+			t.Errorf("record %d: DedupeKey = %q, want %q", i, got[i].DedupeKey, want[i].DedupeKey)
+		}
+	}
+}
+
+func TestRecoveryVisitorSkipsTornTail(t *testing.T) {
+	dir := t.TempDir()
+
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	for i := range 3 {
+		if _, _, err := l.Append(Record{DedupeKey: "k", Payload: []byte{byte(i)}}); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Append a torn frame past the last good record.
+	path := filepath.Join(dir, "000000.log")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if _, err := f.Write([]byte("garbage")); err != nil {
+		t.Fatalf("Write garbage: %v", err)
+	}
+	f.Close()
+
+	var count int
+	l2, err := Open(dir, WithRecoveryVisitor(func(Record) { count++ }))
+	if err != nil {
+		t.Fatalf("Reopen: %v", err)
+	}
+	defer l2.Close()
+
+	// Exactly the 3 good records, never the truncated tail.
+	if count != 3 {
+		t.Errorf("visited %d records, want 3 (torn tail must not be visited)", count)
+	}
+}
