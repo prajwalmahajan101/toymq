@@ -21,6 +21,11 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	DedupeCap       int
 
+	// DefaultPartitions is the partition count applied to a topic
+	// auto-created by a first PUB/SUB (ADR 0021). Existing on-disk topics
+	// keep their recovered count; CREATE overrides per topic. Min 1.
+	DefaultPartitions int
+
 	// FsyncMode selects the WAL durability strategy (ADR 0019):
 	// per-message (default) | batched | none. FsyncInterval is the
 	// group-commit window and applies only to batched.
@@ -51,19 +56,20 @@ type Config struct {
 // Default flag values exported so cmd binaries (toymqctl, toymq-bench,
 // toymq-tui) and tests share one source of truth.
 const (
-	DefaultAddr             = ":6789"
-	DefaultDataDir          = "./data"
-	DefaultLogLevel         = "info"
-	DefaultLogFormat        = "text"
-	DefaultShutdownTimeout  = 5 * time.Second
-	DefaultDedupeCap        = 4096
-	DefaultFsyncMode        = "per-message"
-	DefaultFsyncInterval    = wal.DefaultSyncInterval
-	DefaultRequireHello     = true
-	DefaultMetricsAddr      = ""
-	DefaultOTLPEndpoint     = ""
-	DefaultTraceSampleRatio = 0.05
-	DefaultServiceVersion   = "dev"
+	DefaultAddr              = ":6789"
+	DefaultDataDir           = "./data"
+	DefaultLogLevel          = "info"
+	DefaultLogFormat         = "text"
+	DefaultShutdownTimeout   = 5 * time.Second
+	DefaultDedupeCap         = 4096
+	DefaultDefaultPartitions = 1
+	DefaultFsyncMode         = "per-message"
+	DefaultFsyncInterval     = wal.DefaultSyncInterval
+	DefaultRequireHello      = true
+	DefaultMetricsAddr       = ""
+	DefaultOTLPEndpoint      = ""
+	DefaultTraceSampleRatio  = 0.05
+	DefaultServiceVersion    = "dev"
 )
 
 var (
@@ -85,6 +91,7 @@ func Parse(args []string, stderr io.Writer) (*Config, error) {
 	fs.StringVar(&cfg.LogFormat, "log-format", DefaultLogFormat, "text|json")
 	fs.DurationVar(&cfg.ShutdownTimeout, "shutdown-timeout", DefaultShutdownTimeout, "graceful drain budget")
 	fs.IntVar(&cfg.DedupeCap, "dedupe-cap", DefaultDedupeCap, "per-topic dedupe LRU size")
+	fs.IntVar(&cfg.DefaultPartitions, "default-partitions", DefaultDefaultPartitions, "partition count for auto-created topics (>=1)")
 	fs.StringVar(&cfg.FsyncMode, "fsync", DefaultFsyncMode, "WAL durability: per-message|batched|none")
 	fs.DurationVar(&cfg.FsyncInterval, "fsync-interval", DefaultFsyncInterval, "group-commit window for -fsync=batched")
 	fs.BoolVar(&cfg.RequireHello, "require-hello", DefaultRequireHello, "require the HELLO handshake as the first frame (false = plaintext migration window)")
@@ -125,6 +132,9 @@ func (c *Config) validate() error {
 	}
 	if c.DedupeCap <= 0 {
 		return fmt.Errorf("dedupe-cap %d: must be > 0", c.DedupeCap)
+	}
+	if c.DefaultPartitions < 1 {
+		return fmt.Errorf("default-partitions %d: must be >= 1", c.DefaultPartitions)
 	}
 	if _, err := wal.ParseSyncMode(c.FsyncMode); err != nil {
 		return fmt.Errorf("fsync %q: %w", c.FsyncMode, err)
