@@ -36,3 +36,13 @@ func (PubCommand) isCommand()  {}
 func (SubCommand) isCommand()  {}
 func (AckCommand) isCommand()  {}
 func (NackCommand) isCommand() {}
+
+// Hello is the parsed HELLO handshake frame. It is deliberately NOT a
+// member of the Command union: HELLO is a one-shot handshake phase that
+// precedes the steady-state command loop, not a verb the loop dispatches
+// (ADR 0020). Version is the client's max supported wire version; Token
+// is the optional AUTH bearer token ("" when absent).
+type Hello struct {
+	Version int
+	Token   string
+}

@@ -122,3 +122,68 @@ func TestReadCommandCleanEOF(t *testing.T) {
 		t.Fatalf("err = %v, want io.EOF", err)
 	}
 }
+
+func TestParseHello(t *testing.T) {
+	cases := []struct {
+		name    string
+		line    string
+		want    Hello
+		wantErr error // nil = success; sentinel to errors.Is against
+	}{
+		{"version only", "HELLO 1", Hello{Version: 1}, nil},
+		{"version and auth", "HELLO 1 AUTH s3cret", Hello{Version: 1, Token: "s3cret"}, nil},
+		{"higher version", "HELLO 2 AUTH t", Hello{Version: 2, Token: "t"}, nil},
+		{"not hello", "PUB orders - 3", Hello{}, ErrNotHello},
+		{"empty", "", Hello{}, ErrNotHello},
+		{"bad arity 3", "HELLO 1 AUTH", Hello{}, ErrInvalidCommand},
+		{"bad version", "HELLO x", Hello{}, ErrInvalidCommand},
+		{"zero version", "HELLO 0", Hello{}, ErrInvalidCommand},
+		{"third field not AUTH", "HELLO 1 FOO bar", Hello{}, ErrInvalidCommand},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseHello(tc.line)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err = %v, want Is(%v)", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadHelloFallsBackToLine(t *testing.T) {
+	// A non-HELLO first line returns ErrNotHello but hands back the raw
+	// line so the caller can process it as a command in compat mode.
+	br := bufio.NewReader(strings.NewReader("PUB orders - 5\nhello\n"))
+	_, line, err := ReadHello(br)
+	if !errors.Is(err, ErrNotHello) {
+		t.Fatalf("err = %v, want ErrNotHello", err)
+	}
+	cmd, err := ParseCommandLine(line, br, testMaxPayload)
+	if err != nil {
+		t.Fatalf("parseCommandLine on fallback: %v", err)
+	}
+	pub, ok := cmd.(PubCommand)
+	if !ok || pub.Topic != "orders" || string(pub.Payload) != "hello" {
+		t.Fatalf("fallback command = %#v", cmd)
+	}
+}
+
+func TestWriteHelloOK(t *testing.T) {
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	if err := WriteHelloOK(bw, 1); err != nil {
+		t.Fatalf("WriteHelloOK: %v", err)
+	}
+	if got := buf.String(); got != "HELLO 1 OK\n" {
+		t.Fatalf("wrote %q, want %q", got, "HELLO 1 OK\n")
+	}
+}
