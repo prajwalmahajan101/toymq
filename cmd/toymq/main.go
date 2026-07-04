@@ -18,6 +18,7 @@ import (
 	"github.com/prajwalmahajan101/toymq/internal/metrics"
 	"github.com/prajwalmahajan101/toymq/internal/server"
 	"github.com/prajwalmahajan101/toymq/internal/tracing"
+	"github.com/prajwalmahajan101/toymq/internal/wal"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -74,7 +75,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 	}()
 
-	b, err := broker.NewWithObservability(cfg.DataDir, cfg.DedupeCap, 30*time.Second, 1*time.Second, mtr, tp.Tracer())
+	// FsyncMode was validated in config.Parse, so ParseSyncMode cannot fail here.
+	syncMode, _ := wal.ParseSyncMode(cfg.FsyncMode)
+	syncCfg := broker.SyncConfig{Mode: syncMode, Interval: cfg.FsyncInterval}
+
+	b, err := broker.NewWithObservability(cfg.DataDir, cfg.DedupeCap, 30*time.Second, 1*time.Second, syncCfg, mtr, tp.Tracer())
 	if err != nil {
 		return fmt.Errorf("broker: %w", err)
 	}

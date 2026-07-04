@@ -43,12 +43,24 @@ type Broker struct {
 	redeliverCancel context.CancelFunc
 	redeliverDone   chan struct{}
 
+	// sync selects the WAL fsync strategy applied to every topic's log
+	// (ADR 0019). Zero value = SyncPerMessage, today's behaviour.
+	sync SyncConfig
+
 	// metrics and tracer are optional; nil means "observability
 	// off". Helpers on *Metrics already nil-check, and the noop
 	// TracerProvider returns no-op spans, so call sites stay
 	// branch-free.
 	metrics *metrics.Metrics
 	tracer  trace.Tracer
+}
+
+// SyncConfig is the WAL durability strategy the broker applies when it
+// opens each topic's log. Mode's zero value (wal.SyncPerMessage)
+// preserves ADR 0002 behaviour; Interval applies only to batched.
+type SyncConfig struct {
+	Mode     wal.SyncMode
+	Interval time.Duration
 }
 
 // New opens (or recovers) a Broker rooted at dataDir with per-topic
@@ -58,12 +70,13 @@ func New(dataDir string, dedupeCap int) (*Broker, error) {
 	return NewWithTimings(dataDir, dedupeCap, defaultVisibilityTimeout, defaultRedeliverInterval)
 }
 
-// NewWithObservability is NewWithTimings plus optional metrics +
-// tracer wiring. cmd/toymq calls this with non-nil m and tr when
-// --metrics-addr or --otlp-endpoint is set; tests pass nil and get
-// the same behaviour as New.
-func NewWithObservability(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration, m *metrics.Metrics, tr trace.Tracer) (*Broker, error) {
-	b, err := NewWithTimings(dataDir, dedupeCap, visibility, redeliverInterval)
+// NewWithObservability is NewWithTimings plus the WAL SyncConfig and
+// optional metrics + tracer wiring. cmd/toymq calls this with the
+// configured fsync mode and non-nil m/tr when --metrics-addr or
+// --otlp-endpoint is set; tests pass a zero SyncConfig and nil m/tr and
+// get the same behaviour as New.
+func NewWithObservability(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration, sc SyncConfig, m *metrics.Metrics, tr trace.Tracer) (*Broker, error) {
+	b, err := newBroker(dataDir, dedupeCap, visibility, redeliverInterval, sc)
 	if err != nil {
 		return nil, err
 	}
@@ -74,9 +87,17 @@ func NewWithObservability(dataDir string, dedupeCap int, visibility, redeliverIn
 }
 
 // NewWithTimings constructs a Broker with explicit visibility and
-// redeliver-tick durations. Use this when integration tests need
-// faster redelivery than the 30 s production default.
+// redeliver-tick durations and the default (per-message) fsync mode.
+// Use this when integration tests need faster redelivery than the 30 s
+// production default.
 func NewWithTimings(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration) (*Broker, error) {
+	return newBroker(dataDir, dedupeCap, visibility, redeliverInterval, SyncConfig{})
+}
+
+// newBroker is the shared constructor: it applies sc to every topic log
+// it recovers, so the configured fsync mode is in effect from the first
+// recovered topic (not just topics created after startup).
+func newBroker(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration, sc SyncConfig) (*Broker, error) {
 	persistCtx, persistCancel := context.WithCancel(context.Background())
 	redeliverCtx, redeliverCancel := context.WithCancel(context.Background())
 
@@ -85,6 +106,7 @@ func NewWithTimings(dataDir string, dedupeCap int, visibility, redeliverInterval
 		dedupeCap:         dedupeCap,
 		visibilityTimeout: visibility,
 		redeliverInterval: redeliverInterval,
+		sync:              sc,
 		topics:            make(map[string]*Topic),
 		persistCtx:        persistCtx,
 		persistCancel:     persistCancel,
@@ -195,9 +217,11 @@ func (b *Broker) getOrCreateTopic(name string) (*Topic, error) {
 
 	topicDir := filepath.Join(b.dataDir, "topics", name)
 	dedupe := NewDedupeIndex(b.dedupeCap)
-	log, err := wal.Open(topicDir, wal.WithRecoveryVisitor(func(rec wal.Record) {
-		rebuildIndexes(dedupe, rec)
-	}))
+	log, err := wal.Open(topicDir,
+		wal.WithSyncMode(b.sync.Mode, b.sync.Interval),
+		wal.WithRecoveryVisitor(func(rec wal.Record) {
+			rebuildIndexes(dedupe, rec)
+		}))
 	if err != nil {
 		return nil, fmt.Errorf("open wal for topic %q:%w", name, err)
 	}
