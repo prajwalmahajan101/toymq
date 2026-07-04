@@ -16,9 +16,10 @@ const (
 )
 
 type msgFrame struct {
-	topic   string
-	msgID   uint64
-	payload []byte
+	topic     string
+	partition int
+	msgID     uint64
+	payload   []byte
 }
 
 // testClient wraps a single TCP connection to the broker. Methods
@@ -58,13 +59,27 @@ func (c *testClient) close() {
 
 // ---- writes -----------------------------------------------------------------
 
+// pub publishes with dedupe key key and no routing key (round-robin /
+// single partition). See pubRouted for the partition-routing variant.
 func (c *testClient) pub(t *testing.T, topic, key string, payload []byte) {
+	t.Helper()
+	c.pubRouted(t, topic, key, "", payload)
+}
+
+// pubRouted publishes with an explicit dedupe key and routing key (ADR
+// 0021). Either may be "" (sent as "-"). Pin a partition by passing topic
+// as "<topic>#<n>".
+func (c *testClient) pubRouted(t *testing.T, topic, key, routingKey string, payload []byte) {
 	t.Helper()
 	keyField := key
 	if keyField == "" {
 		keyField = "-"
 	}
-	if _, err := fmt.Fprintf(c.w, "PUB %s %s %d\n", topic, keyField, len(payload)); err != nil {
+	routeField := routingKey
+	if routeField == "" {
+		routeField = "-"
+	}
+	if _, err := fmt.Fprintf(c.w, "PUB %s %s %s %d\n", topic, keyField, routeField, len(payload)); err != nil {
 		t.Fatalf("write PUB header: %v", err)
 	}
 	if _, err := c.w.Write(payload); err != nil {
@@ -78,6 +93,17 @@ func (c *testClient) pub(t *testing.T, topic, key string, payload []byte) {
 	}
 }
 
+// create sends CREATE <topic> PARTITIONS <n>.
+func (c *testClient) create(t *testing.T, topic string, partitions int) {
+	t.Helper()
+	if _, err := fmt.Fprintf(c.w, "CREATE %s PARTITIONS %d\n", topic, partitions); err != nil {
+		t.Fatalf("write CREATE: %v", err)
+	}
+	if err := c.w.Flush(); err != nil {
+		t.Fatalf("flush CREATE: %v", err)
+	}
+}
+
 func (c *testClient) sub(t *testing.T, topic, consumerID string) {
 	t.Helper()
 	if _, err := fmt.Fprintf(c.w, "SUB %s %s\n", topic, consumerID); err != nil {
@@ -88,9 +114,15 @@ func (c *testClient) sub(t *testing.T, topic, consumerID string) {
 	}
 }
 
+// ack acknowledges (partition 0, id). Use ackP for a non-zero partition.
 func (c *testClient) ack(t *testing.T, consumerID string, id uint64) {
 	t.Helper()
-	if _, err := fmt.Fprintf(c.w, "ACK %s %d\n", consumerID, id); err != nil {
+	c.ackP(t, consumerID, 0, id)
+}
+
+func (c *testClient) ackP(t *testing.T, consumerID string, partition int, id uint64) {
+	t.Helper()
+	if _, err := fmt.Fprintf(c.w, "ACK %s %d %d\n", consumerID, partition, id); err != nil {
 		t.Fatalf("write ACK: %v", err)
 	}
 	if err := c.w.Flush(); err != nil {
@@ -98,9 +130,16 @@ func (c *testClient) ack(t *testing.T, consumerID string, id uint64) {
 	}
 }
 
+// nack negatively acknowledges (partition 0, id). Use nackP for a non-zero
+// partition.
 func (c *testClient) nack(t *testing.T, consumerID string, id uint64) {
 	t.Helper()
-	if _, err := fmt.Fprintf(c.w, "NACK %s %d\n", consumerID, id); err != nil {
+	c.nackP(t, consumerID, 0, id)
+}
+
+func (c *testClient) nackP(t *testing.T, consumerID string, partition int, id uint64) {
+	t.Helper()
+	if _, err := fmt.Fprintf(c.w, "NACK %s %d %d\n", consumerID, partition, id); err != nil {
 		t.Fatalf("write NACK: %v", err)
 	}
 	if err := c.w.Flush(); err != nil {
@@ -146,23 +185,27 @@ func (c *testClient) absorbMsg(t *testing.T, header string) {
 	c.pending = append(c.pending, frame)
 }
 
-// parseMsgHeader returns a frame with topic/msgID set and payload
-// sized but not yet filled (length encoded in cap len).
+// parseMsgHeader returns a frame with topic/partition/msgID set and
+// payload sized but not yet filled (length encoded in cap len).
 func parseMsgHeader(t *testing.T, line string) msgFrame {
 	t.Helper()
 	fields := strings.Fields(line)
-	if len(fields) != 4 || fields[0] != "MSG" {
+	if len(fields) != 5 || fields[0] != "MSG" {
 		t.Fatalf("bad MSG header %q", line)
 	}
-	id, err := strconv.ParseUint(fields[2], 10, 64)
+	partition, err := strconv.Atoi(fields[2])
+	if err != nil || partition < 0 {
+		t.Fatalf("parse MSG partition %q: %v", fields[2], err)
+	}
+	id, err := strconv.ParseUint(fields[3], 10, 64)
 	if err != nil {
-		t.Fatalf("parse MSG id %q: %v", fields[2], err)
+		t.Fatalf("parse MSG id %q: %v", fields[3], err)
 	}
-	n, err := strconv.Atoi(fields[3])
+	n, err := strconv.Atoi(fields[4])
 	if err != nil || n < 0 {
-		t.Fatalf("parse MSG len %q: %v", fields[3], err)
+		t.Fatalf("parse MSG len %q: %v", fields[4], err)
 	}
-	return msgFrame{topic: fields[1], msgID: id, payload: make([]byte, n)}
+	return msgFrame{topic: fields[1], partition: partition, msgID: id, payload: make([]byte, n)}
 }
 
 func (c *testClient) readPayload(t *testing.T, n int) []byte {
