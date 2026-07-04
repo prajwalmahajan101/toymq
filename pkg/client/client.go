@@ -178,11 +178,12 @@ func (c *Client) dispatch(f frame) {
 			return
 		}
 		d := Delivery{
-			Topic:   f.msgTopic,
-			MsgID:   f.msgID,
-			Payload: f.payload,
-			Ack:     c.makeAck(cid, f.msgID),
-			Nack:    c.makeNack(cid, f.msgID),
+			Topic:     f.msgTopic,
+			Partition: f.msgPartition,
+			MsgID:     f.msgID,
+			Payload:   f.payload,
+			Ack:       c.makeAck(cid, f.msgPartition, f.msgID),
+			Nack:      c.makeNack(cid, f.msgPartition, f.msgID),
 		}
 		select {
 		case ch <- d:

@@ -22,14 +22,15 @@ const (
 // frame is one parsed wire frame. Only the fields meaningful for its
 // kind are populated.
 type frame struct {
-	kind     frameKind
-	okID     uint64
-	dupID    uint64
-	errCode  string
-	errMsg   string
-	msgTopic string
-	msgID    uint64
-	payload  []byte
+	kind         frameKind
+	okID         uint64
+	dupID        uint64
+	errCode      string
+	errMsg       string
+	msgTopic     string
+	msgPartition int
+	msgID        uint64
+	payload      []byte
 }
 
 // readFrame consumes exactly one frame from r. Returns io.EOF if the
@@ -67,16 +68,20 @@ func readFrame(r *bufio.Reader) (frame, error) {
 
 	case strings.HasPrefix(line, "MSG "):
 		fields := strings.Fields(line)
-		if len(fields) != 4 {
+		if len(fields) != 5 {
 			return frame{}, fmt.Errorf("bad MSG header %q", line)
 		}
-		id, err := strconv.ParseUint(fields[2], 10, 64)
-		if err != nil {
-			return frame{}, fmt.Errorf("parse MSG id %q: %w", fields[2], err)
+		partition, err := strconv.Atoi(fields[2])
+		if err != nil || partition < 0 {
+			return frame{}, fmt.Errorf("parse MSG partition %q: %w", fields[2], err)
 		}
-		plen, err := strconv.Atoi(fields[3])
+		id, err := strconv.ParseUint(fields[3], 10, 64)
+		if err != nil {
+			return frame{}, fmt.Errorf("parse MSG id %q: %w", fields[3], err)
+		}
+		plen, err := strconv.Atoi(fields[4])
 		if err != nil || plen < 0 {
-			return frame{}, fmt.Errorf("parse MSG len %q: %w", fields[3], err)
+			return frame{}, fmt.Errorf("parse MSG len %q: %w", fields[4], err)
 		}
 		payload := make([]byte, plen)
 		if _, err := io.ReadFull(r, payload); err != nil {
@@ -89,7 +94,7 @@ func readFrame(r *bufio.Reader) (frame, error) {
 		if nl != '\n' {
 			return frame{}, errors.New("MSG trailer not newline")
 		}
-		return frame{kind: frameMsg, msgTopic: fields[1], msgID: id, payload: payload}, nil
+		return frame{kind: frameMsg, msgTopic: fields[1], msgPartition: partition, msgID: id, payload: payload}, nil
 	}
 
 	return frame{}, fmt.Errorf("unknown frame %q", line)

@@ -7,9 +7,11 @@ import (
 )
 
 // Pub publishes payload to topic. If dedupeKey is non-empty and the
-// broker has seen it before, dup is true and msgID echoes the prior
-// OK. Otherwise msgID is the freshly assigned id.
-func (c *Client) Pub(ctx context.Context, topic, dedupeKey string, payload []byte) (msgID uint64, dup bool, err error) {
+// broker has seen it before, dup is true and msgID echoes the prior OK;
+// otherwise msgID is the freshly assigned (partition-local) id. routingKey
+// selects the partition by hash when non-empty; empty round-robins. To pin
+// a partition explicitly, pass topic as "<topic>#<n>" (ADR 0021).
+func (c *Client) Pub(ctx context.Context, topic, dedupeKey, routingKey string, payload []byte) (msgID uint64, dup bool, err error) {
 	if c.isClosed() {
 		return 0, false, ErrClosed
 	}
@@ -17,6 +19,10 @@ func (c *Client) Pub(ctx context.Context, topic, dedupeKey string, payload []byt
 	key := dedupeKey
 	if key == "" {
 		key = "-"
+	}
+	rkey := routingKey
+	if rkey == "" {
+		rkey = "-"
 	}
 
 	p := c.pending.push()
@@ -27,7 +33,7 @@ func (c *Client) Pub(ctx context.Context, topic, dedupeKey string, payload []byt
 		c.pending.cancel(p)
 		return 0, false, ErrClosed
 	}
-	if _, werr := fmt.Fprintf(c.w, "PUB %s %s %d\n", topic, key, len(payload)); werr != nil {
+	if _, werr := fmt.Fprintf(c.w, "PUB %s %s %s %d\n", topic, key, rkey, len(payload)); werr != nil {
 		c.writeMu.Unlock()
 		c.pending.cancel(p)
 		return 0, false, fmt.Errorf("%w: write PUB header: %w", ErrTransport, werr)
