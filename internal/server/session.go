@@ -33,9 +33,12 @@ type Session struct {
 	quit       chan struct{} // closed by Run to ask writer to exit
 	writerDone chan struct{} // closed by writer on its way out
 
-	// reader-onlu state - only the reader goroutine touches these
+	// reader-only state - only the reader goroutine touches these.
+	// currentSubs holds one Subscription per partition (a single entry
+	// for a partition-scoped SUB, N for an all-partitions SUB); a single
+	// currentCancel cancels all of them (ADR 0021).
 	currentTopic  string
-	currentSub    *broker.Subscription
+	currentSubs   []*broker.Subscription
 	currentCancel context.CancelFunc
 }
 
@@ -205,24 +208,42 @@ func (s *Session) handleCommand(ctx context.Context, cmd proto.Command) {
 		s.handleNack(c)
 	case proto.SubCommand:
 		s.handleSub(ctx, c)
+	case proto.CreateCommand:
+		s.handleCreate(c)
 	}
 }
 
 func (s *Session) handlePub(c proto.PubCommand) {
-	id, dup, err := s.broker.Publish(c.Topic, c.DedupeKey, c.Payload)
+	id, _, dup, err := s.broker.Publish(c.Topic, c.DedupeKey, c.RoutingKey, c.Partition, c.PartitionSet, c.Payload)
 	if err != nil {
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "PUB_FAILED", reason)
 		})
+		return
 	}
 	if dup {
+		// A duplicate replies DUP <original-id> then OK <original-id>, so
+		// callers that only read one response frame still see the OK.
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteDup(bw, id)
 		})
 	}
 	s.sendResp(func(bw *bufio.Writer) error {
 		return proto.WriteOK(bw, id)
+	})
+}
+
+func (s *Session) handleCreate(c proto.CreateCommand) {
+	if err := s.broker.CreateTopic(c.Topic, c.Partitions); err != nil {
+		reason := err.Error()
+		s.sendResp(func(bw *bufio.Writer) error {
+			return proto.WriteErr(bw, "CREATE_FAILED", reason)
+		})
+		return
+	}
+	s.sendResp(func(bw *bufio.Writer) error {
+		return proto.WriteOK(bw, 0)
 	})
 }
 
@@ -233,7 +254,7 @@ func (s *Session) handleAck(c proto.AckCommand) {
 		})
 		return
 	}
-	if err := s.broker.Ack(s.currentTopic, c.ConsumerID, c.MsgID); err != nil {
+	if err := s.broker.Ack(s.currentTopic, c.Partition, c.ConsumerID, c.MsgID); err != nil {
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "ACK_FAILED", reason)
@@ -254,7 +275,7 @@ func (s *Session) handleNack(c proto.NackCommand) {
 		})
 		return
 	}
-	if err := s.broker.Nack(s.currentTopic, c.ConsumerID, c.MsgID, s.sendCh); err != nil {
+	if err := s.broker.Nack(s.currentTopic, c.Partition, c.ConsumerID, c.MsgID, s.sendCh); err != nil {
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "NACK_FAILED", reason)
@@ -270,19 +291,25 @@ func (s *Session) handleNack(c proto.NackCommand) {
 func (s *Session) handleSub(ctx context.Context, c proto.SubCommand) {
 	if s.currentCancel != nil {
 		s.currentCancel()
-		s.currentSub = nil
+		s.currentSubs = nil
 		s.currentCancel = nil
 	}
 
-	// Validate the topic and queue the SUB acknowledgement BEFORE
-	// Subscribe starts the delivery goroutine, so the OK is on respCh
-	// ahead of any MSG that goroutine pushes onto sendCh. Combined with
-	// the writer's respCh priority, the OK deterministically precedes the
-	// first MSG.
-	if err := s.broker.EnsureTopic(c.Topic); err != nil {
+	// Ensure the topic and validate the partition selector BEFORE queuing
+	// the SUB acknowledgement, so the OK is on respCh ahead of any MSG the
+	// delivery goroutines push onto sendCh. Combined with the writer's
+	// respCh priority, the OK deterministically precedes the first MSG.
+	count, err := s.broker.TopicPartitions(c.Topic)
+	if err != nil {
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "SUB_FAILED", reason)
+		})
+		return
+	}
+	if !c.AllPartitions && (c.Partition < 0 || c.Partition >= count) {
+		s.sendResp(func(bw *bufio.Writer) error {
+			return proto.WriteErr(bw, "SUB_FAILED", "partition out of range")
 		})
 		return
 	}
@@ -291,16 +318,15 @@ func (s *Session) handleSub(ctx context.Context, c proto.SubCommand) {
 	})
 
 	subCtx, cancel := context.WithCancel(ctx)
-	sub, err := s.broker.Subscribe(subCtx, c.Topic, c.ConsumerID, s.sendCh)
+	subs, err := s.broker.Subscribe(subCtx, c.Topic, c.Partition, c.AllPartitions, c.ConsumerID, s.sendCh)
 	if err != nil {
-		// Unreachable in practice — EnsureTopic just created the topic,
-		// so getOrCreateTopic inside Subscribe cannot fail. Tear down
-		// defensively without a second response frame.
+		// Unreachable in practice — the topic exists and the selector was
+		// range-checked above. Tear down defensively without a second frame.
 		cancel()
 		return
 	}
 
-	s.currentSub = sub
+	s.currentSubs = subs
 	s.currentCancel = cancel
 	s.currentTopic = c.Topic
 }
@@ -335,7 +361,7 @@ func (s *Session) runWriter() {
 				return
 			}
 		case inf := <-s.sendCh:
-			if err := proto.WriteMsg(bw, inf.Topic, inf.MsgID, inf.Payload); err != nil {
+			if err := proto.WriteMsg(bw, inf.Topic, inf.Partition, inf.MsgID, inf.Payload); err != nil {
 				_ = s.conn.Close()
 				return
 			}
