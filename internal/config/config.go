@@ -27,6 +27,17 @@ type Config struct {
 	FsyncMode     string
 	FsyncInterval time.Duration
 
+	// Handshake / auth / TLS (ADR 0020). RequireHello makes the HELLO
+	// frame mandatory (default); AuthTokenFile enables bearer-token
+	// auth; TLSAddr runs a TLS listener alongside the plain Addr using
+	// TLSCert/TLSKey. All default to the pre-M3 posture (hello required,
+	// no auth, no TLS) except that a fresh binary now requires HELLO.
+	RequireHello  bool
+	AuthTokenFile string
+	TLSAddr       string
+	TLSCert       string
+	TLSKey        string
+
 	// Observability (ADR 0015). Empty MetricsAddr disables the
 	// HTTP /metrics + /healthz endpoint. Empty OTLPEndpoint
 	// installs the noop tracer. Both default to off so existing
@@ -48,6 +59,7 @@ const (
 	DefaultDedupeCap        = 4096
 	DefaultFsyncMode        = "per-message"
 	DefaultFsyncInterval    = wal.DefaultSyncInterval
+	DefaultRequireHello     = true
 	DefaultMetricsAddr      = ""
 	DefaultOTLPEndpoint     = ""
 	DefaultTraceSampleRatio = 0.05
@@ -75,6 +87,11 @@ func Parse(args []string, stderr io.Writer) (*Config, error) {
 	fs.IntVar(&cfg.DedupeCap, "dedupe-cap", DefaultDedupeCap, "per-topic dedupe LRU size")
 	fs.StringVar(&cfg.FsyncMode, "fsync", DefaultFsyncMode, "WAL durability: per-message|batched|none")
 	fs.DurationVar(&cfg.FsyncInterval, "fsync-interval", DefaultFsyncInterval, "group-commit window for -fsync=batched")
+	fs.BoolVar(&cfg.RequireHello, "require-hello", DefaultRequireHello, "require the HELLO handshake as the first frame (false = plaintext migration window)")
+	fs.StringVar(&cfg.AuthTokenFile, "auth-token-file", "", "file of bearer tokens (one per line) enabling AUTH; empty disables auth")
+	fs.StringVar(&cfg.TLSAddr, "tls-addr", "", "TLS listen address, run alongside -addr; empty disables TLS")
+	fs.StringVar(&cfg.TLSCert, "tls-cert", "", "PEM certificate file for -tls-addr")
+	fs.StringVar(&cfg.TLSKey, "tls-key", "", "PEM private key file for -tls-addr")
 	fs.StringVar(&cfg.MetricsAddr, "metrics-addr", DefaultMetricsAddr, "Prometheus /metrics listen address (empty disables)")
 	fs.StringVar(&cfg.OTLPEndpoint, "otlp-endpoint", DefaultOTLPEndpoint, "OTLP gRPC tracing endpoint (empty disables tracing)")
 	fs.Float64Var(&cfg.TraceSampleRatio, "trace-sample-ratio", DefaultTraceSampleRatio, "fraction of root spans to sample [0..1]")
@@ -117,6 +134,12 @@ func (c *Config) validate() error {
 	}
 	if c.TraceSampleRatio < 0 || c.TraceSampleRatio > 1 {
 		return fmt.Errorf("trace-sample-ratio %v: must be in [0,1]", c.TraceSampleRatio)
+	}
+	if (c.TLSCert == "") != (c.TLSKey == "") {
+		return errors.New("tls-cert and tls-key must be set together")
+	}
+	if c.TLSAddr != "" && c.TLSCert == "" {
+		return errors.New("tls-addr requires tls-cert and tls-key")
 	}
 	return nil
 }
