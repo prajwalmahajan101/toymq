@@ -20,4 +20,13 @@ var (
 	// ErrSubInUse is returned by a second Sub on a Client that
 	// already owns a subscription.
 	ErrSubInUse = errors.New("client: subscription already active")
+
+	// ErrHandshake is returned by Dial when the HELLO handshake fails
+	// (bad version, malformed response, or a rejecting ERR). See ADR 0020.
+	ErrHandshake = errors.New("client: handshake failed")
+
+	// ErrAuth wraps ErrHandshake for the specific case of an AUTH
+	// rejection, so callers can errors.Is against it to distinguish a
+	// bad/missing token from other handshake failures.
+	ErrAuth = errors.New("client: authentication failed")
 )
