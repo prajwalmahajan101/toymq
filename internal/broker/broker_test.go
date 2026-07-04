@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/prajwalmahajan101/toymq/internal/wal"
 )
 
 const testDedupeCap = 100
@@ -553,5 +555,41 @@ func TestDedupeRebuildRespectsLRUCap(t *testing.T) {
 		if _, ok := top.dedupe.Lookup(key); !ok {
 			t.Errorf("%s missing after restart; expected retained (cap=%d)", key, dedupeCap)
 		}
+	}
+}
+
+// TestBatchedSyncDeliversEndToEnd checks the broker wires SyncBatched
+// into each topic's WAL: a publish under batched mode still gets a real
+// MsgID and is delivered to a subscriber (the group committer fsyncs on
+// its interval, then delivery proceeds). Uses a short interval so the
+// ticker fires quickly.
+func TestBatchedSyncDeliversEndToEnd(t *testing.T) {
+	sc := SyncConfig{Mode: wal.SyncBatched, Interval: 2 * time.Millisecond}
+	b, err := newBroker(t.TempDir(), testDedupeCap, defaultVisibilityTimeout, 20*time.Millisecond, sc)
+	if err != nil {
+		t.Fatalf("newBroker: %v", err)
+	}
+	t.Cleanup(func() { b.Close() })
+
+	id, dup, err := b.Publish("orders", "k1", []byte("batched-payload"))
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if dup {
+		t.Fatal("unexpected dup on first publish")
+	}
+
+	ch := make(chan *Inflight, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	inf := recvInflight(t, ch, 2*time.Second)
+	if inf.MsgID != id {
+		t.Fatalf("delivered MsgID = %d, want %d", inf.MsgID, id)
+	}
+	if string(inf.Payload) != "batched-payload" {
+		t.Fatalf("payload = %q", inf.Payload)
 	}
 }
