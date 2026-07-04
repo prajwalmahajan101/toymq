@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/broker"
+	"github.com/prajwalmahajan101/toymq/internal/testcerts"
 )
 
 func setupServer(t *testing.T) (*Server, *broker.Broker) {
@@ -194,4 +196,52 @@ func TestServerGoroutineLeak(t *testing.T) {
 	if now > baseline+2 {
 		t.Fatalf("goroutine leak: baseline=%d now=%d", baseline, now)
 	}
+}
+
+// TestServerTLSRoundTrip verifies the Server terminates TLS: a client
+// dialing over tls with the test root does a full PUB round-trip. Uses
+// compat mode (no HELLO required) so the test focuses on the transport.
+func TestServerTLSRoundTrip(t *testing.T) {
+	b, err := broker.New(t.TempDir(), 16)
+	if err != nil {
+		t.Fatalf("broker.New: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	certPEM, keyPEM, err := testcerts.GenerateSelfSigned("127.0.0.1")
+	if err != nil {
+		t.Fatalf("gen cert: %v", err)
+	}
+	srvTLS, err := testcerts.ServerConfig(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("server tls: %v", err)
+	}
+	cliTLS, err := testcerts.ClientConfig(certPEM)
+	if err != nil {
+		t.Fatalf("client tls: %v", err)
+	}
+
+	s := New("127.0.0.1:0", b, WithTLS(srvTLS))
+	errCh := runServer(t, t.Context(), s)
+
+	conn, err := tls.Dial("tcp", s.Addr(), cliTLS)
+	if err != nil {
+		t.Fatalf("tls dial: %v", err)
+	}
+	go func() { conn.Write([]byte("PUB orders - 5\nhello\n")) }()
+
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read over tls: %v", err)
+	}
+	if !strings.HasPrefix(line, "OK ") {
+		t.Fatalf("tls PUB resp = %q, want OK", strings.TrimRight(line, "\r\n"))
+	}
+
+	_ = conn.Close()
+	if err := s.Shutdown(t.Context()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	<-errCh
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,8 +24,10 @@ const (
 // lifecycle. One Server per broker process; goroutine ownership is
 // documented in ADR 0008.
 type Server struct {
-	addr   string
-	broker *broker.Broker
+	addr      string
+	broker    *broker.Broker
+	auth      authConfig
+	tlsConfig *tls.Config // nil => plaintext listener
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -37,17 +40,46 @@ type Server struct {
 	metrics *metrics.Metrics
 }
 
+// Option configures a Server at construction. The zero-value Server
+// (no options) keeps pre-M3 behaviour: no handshake, no auth.
+type Option func(*Server)
+
+// WithRequireHello makes the HELLO handshake mandatory (v) or optional
+// (compat migration window). See ADR 0020.
+func WithRequireHello(v bool) Option {
+	return func(s *Server) { s.auth.requireHello = v }
+}
+
+// WithTokens enables bearer-token auth: HELLO must carry a matching
+// AUTH token. An empty slice leaves auth disabled.
+func WithTokens(tokens []string) Option {
+	return func(s *Server) { s.auth.tokens = tokens }
+}
+
+// WithTLS makes this Server terminate TLS: Serve wraps its listener with
+// tls.NewListener(cfg). Pass a config with a loaded certificate and
+// MinVersion >= TLS 1.2. nil leaves the listener plaintext.
+func WithTLS(cfg *tls.Config) Option {
+	return func(s *Server) { s.tlsConfig = cfg }
+}
+
 // New constructs an unstarted Server bound to addr against broker b.
 // Call Serve to start accepting; Shutdown to drain.
-func New(addr string, b *broker.Broker) *Server {
-	return &Server{addr: addr, broker: b}
+func New(addr string, b *broker.Broker, opts ...Option) *Server {
+	s := &Server{addr: addr, broker: b}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // NewWithObservability is New plus a *Metrics pointer. The Server
 // uses it to maintain the toymq_active_sessions gauge. nil m yields
 // the same behaviour as New.
-func NewWithObservability(addr string, b *broker.Broker, m *metrics.Metrics) *Server {
-	return &Server{addr: addr, broker: b, metrics: m}
+func NewWithObservability(addr string, b *broker.Broker, m *metrics.Metrics, opts ...Option) *Server {
+	s := New(addr, b, opts...)
+	s.metrics = m
+	return s
 }
 
 // Addr returns the actual bound address. Useful when New was given
@@ -94,12 +126,15 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.addr, err)
 	}
+	if s.tlsConfig != nil {
+		l = tls.NewListener(l, s.tlsConfig)
+	}
 
 	s.mu.Lock()
 	s.listener = l
 	s.mu.Unlock()
 
-	slog.Info("listening", "addr", l.Addr().String())
+	slog.Info("listening", "addr", l.Addr().String(), "tls", s.tlsConfig != nil)
 
 	// serveCtx is cancelled when the ctx cancels OR Serve exits.
 	// The watcher uses it to know when to give up watching
@@ -148,7 +183,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			defer s.wg.Done()
 			s.metrics.IncSessions()
 			defer s.metrics.DecSessions()
-			sess := NewSession(c, s.broker)
+			sess := NewSession(c, s.broker, s.auth)
 			sess.Run(ctx)
 		}(conn)
 

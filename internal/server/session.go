@@ -25,6 +25,7 @@ type Session struct {
 	conn       io.ReadWriteCloser
 	broker     *broker.Broker
 	maxPayload int
+	auth       authConfig
 
 	respCh chan func(*bufio.Writer) error
 	sendCh chan *broker.Inflight
@@ -39,12 +40,14 @@ type Session struct {
 }
 
 // NewSession builds an idle Session ready for Run. The underlying
-// conn is closed by Run on exit.
-func NewSession(conn io.ReadWriteCloser, b *broker.Broker) *Session {
+// conn is closed by Run on exit. The zero-value authConfig disables the
+// handshake (pre-M3 behaviour).
+func NewSession(conn io.ReadWriteCloser, b *broker.Broker, auth authConfig) *Session {
 	return &Session{
 		conn:       conn,
 		broker:     b,
 		maxPayload: defaultMaxPayload,
+		auth:       auth,
 		respCh:     make(chan func(*bufio.Writer) error, respChBuf),
 		sendCh:     make(chan *broker.Inflight, sendChBuf),
 		quit:       make(chan struct{}),
@@ -60,9 +63,23 @@ func (s *Session) Run(ctx context.Context) {
 	remote := remoteAddr(s.conn)
 	slog.Debug("session opened", "remote-addr", remote)
 
+	br := bufio.NewReader(s.conn)
+	bw := bufio.NewWriter(s.conn)
+
+	// Handshake is a synchronous request/response phase written directly
+	// to bw — it runs BEFORE the async writer goroutine starts, so a
+	// rejection's ERR frame can never be dropped by teardown racing the
+	// respCh (ADR 0020).
+	compatLine, ok := s.handshake(br, bw)
+	if !ok {
+		_ = s.conn.Close()
+		slog.Debug("session closed", "remote-addr", remote, "reason", "handshake-rejected")
+		return
+	}
+
 	go s.runWriter()
 
-	s.runReader(ctx)
+	s.runReader(ctx, br, compatLine)
 
 	if s.currentCancel != nil {
 		s.currentCancel()
@@ -84,32 +101,91 @@ func remoteAddr(conn io.ReadWriteCloser) string {
 	return "unknown"
 }
 
-func (s *Session) runReader(ctx context.Context) {
-	br := bufio.NewReader(s.conn)
+func (s *Session) runReader(ctx context.Context, br *bufio.Reader, compatLine string) {
+	// In compat mode the handshake handed back a non-HELLO first line to
+	// process as a command before the steady-state loop.
+	if compatLine != "" {
+		if !s.processLine(ctx, compatLine, br) {
+			return
+		}
+	}
+
 	for {
 		cmd, err := proto.ReadCommand(br, s.maxPayload)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return
-			}
-			if errors.Is(err, proto.ErrInvalidCommand) || errors.Is(err, proto.ErrPayloadTooLarge) {
-				reason := err.Error()
-				s.sendResp(func(bw *bufio.Writer) error {
-					return proto.WriteErr(bw, "INVALID", reason)
-				})
-				continue
-			}
-			// ErrBadFraming or I/O - stream desyned, give up.
+		if !s.handleParsed(ctx, cmd, err) {
 			return
 		}
-
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		s.handleCommand(ctx, cmd)
 	}
+}
+
+// handshake runs the HELLO exchange (ADR 0020), writing its response
+// synchronously to bw. It returns (compatLine, proceed): proceed=false
+// means close the connection; a non-empty compatLine is the first line
+// to process as a command when --require-hello is off and the client
+// skipped HELLO.
+func (s *Session) handshake(br *bufio.Reader, bw *bufio.Writer) (string, bool) {
+	h, line, err := proto.ReadHello(br)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return "", false // client hung up before handshaking
+		}
+		if errors.Is(err, proto.ErrNotHello) {
+			if s.auth.requireHello {
+				_ = proto.WriteErr(bw, proto.ErrCodeHello, "expected HELLO as first frame")
+				return "", false
+			}
+			return line, true // compat: process this line as a command
+		}
+		// Malformed HELLO or bad framing.
+		_ = proto.WriteErr(bw, proto.ErrCodeHello, err.Error())
+		return "", false
+	}
+
+	if s.auth.authEnabled() && !s.auth.checkToken(h.Token) {
+		_ = proto.WriteErr(bw, proto.ErrCodeAuth, "invalid or missing token")
+		return "", false
+	}
+
+	negotiated := min(h.Version, serverMaxVersion)
+	if err := proto.WriteHelloOK(bw, negotiated); err != nil {
+		return "", false
+	}
+	return "", true
+}
+
+// processLine handles one already-read header line as a command (compat
+// first-line path). Returns false to close the connection.
+func (s *Session) processLine(ctx context.Context, line string, br *bufio.Reader) bool {
+	cmd, err := proto.ParseCommandLine(line, br, s.maxPayload)
+	return s.handleParsed(ctx, cmd, err)
+}
+
+// handleParsed applies the shared post-parse policy: EOF/framing errors
+// close the connection, INVALID/oversized get an ERR and continue, and a
+// good command is dispatched. Returns false to stop the reader.
+func (s *Session) handleParsed(ctx context.Context, cmd proto.Command, err error) bool {
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return false
+		}
+		if errors.Is(err, proto.ErrInvalidCommand) || errors.Is(err, proto.ErrPayloadTooLarge) {
+			reason := err.Error()
+			s.sendResp(func(bw *bufio.Writer) error {
+				return proto.WriteErr(bw, "INVALID", reason)
+			})
+			return true
+		}
+		// ErrBadFraming or I/O - stream desynced, give up.
+		return false
+	}
+
+	select {
+	case <-ctx.Done():
+		return false
+	default:
+	}
+	s.handleCommand(ctx, cmd)
+	return true
 }
 
 func (s *Session) sendResp(fn func(*bufio.Writer) error) {
