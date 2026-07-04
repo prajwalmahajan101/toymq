@@ -274,24 +274,35 @@ func (s *Session) handleSub(ctx context.Context, c proto.SubCommand) {
 		s.currentCancel = nil
 	}
 
-	subCtx, cancel := context.WithCancel(ctx)
-	sub, err := s.broker.Subscribe(subCtx, c.Topic, c.ConsumerID, s.sendCh)
-	if err != nil {
-		cancel()
+	// Validate the topic and queue the SUB acknowledgement BEFORE
+	// Subscribe starts the delivery goroutine, so the OK is on respCh
+	// ahead of any MSG that goroutine pushes onto sendCh. Combined with
+	// the writer's respCh priority, the OK deterministically precedes the
+	// first MSG.
+	if err := s.broker.EnsureTopic(c.Topic); err != nil {
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "SUB_FAILED", reason)
 		})
 		return
 	}
+	s.sendResp(func(bw *bufio.Writer) error {
+		return proto.WriteOK(bw, 0)
+	})
+
+	subCtx, cancel := context.WithCancel(ctx)
+	sub, err := s.broker.Subscribe(subCtx, c.Topic, c.ConsumerID, s.sendCh)
+	if err != nil {
+		// Unreachable in practice — EnsureTopic just created the topic,
+		// so getOrCreateTopic inside Subscribe cannot fail. Tear down
+		// defensively without a second response frame.
+		cancel()
+		return
+	}
 
 	s.currentSub = sub
 	s.currentCancel = cancel
 	s.currentTopic = c.Topic
-
-	s.sendResp(func(bw *bufio.Writer) error {
-		return proto.WriteOK(bw, 0)
-	})
 }
 
 func (s *Session) runWriter() {
@@ -299,6 +310,24 @@ func (s *Session) runWriter() {
 
 	bw := bufio.NewWriter(s.conn)
 	for {
+		// Prioritise protocol responses (OK/DUP/ERR) over async MSG
+		// pushes: drain any queued response before touching sendCh, so a
+		// request's response always precedes the deliveries it triggered
+		// (e.g. SUB's OK before the first MSG). Go's select is random when
+		// multiple cases are ready, so this explicit two-tier select is
+		// what enforces the ordering.
+		select {
+		case fn := <-s.respCh:
+			if err := fn(bw); err != nil {
+				_ = s.conn.Close()
+				return
+			}
+			continue
+		case <-s.quit:
+			return
+		default:
+		}
+
 		select {
 		case fn := <-s.respCh:
 			if err := fn(bw); err != nil {
