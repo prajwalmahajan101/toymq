@@ -95,7 +95,7 @@ func TestPub_TransportFailure(t *testing.T) {
 	}
 	defer c.Close()
 
-	if _, _, err := c.Pub(context.Background(), "orders", "", []byte("ok")); err != nil {
+	if _, _, err := c.Pub(context.Background(), "orders", "", "", []byte("ok")); err != nil {
 		t.Fatalf("Pub: %v", err)
 	}
 
@@ -110,7 +110,7 @@ func TestPub_TransportFailure(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	_, _, err = c.Pub(context.Background(), "orders", "", []byte("x"))
+	_, _, err = c.Pub(context.Background(), "orders", "", "", []byte("x"))
 	if err == nil {
 		t.Fatal("Pub: want error after transport kill")
 	}
@@ -152,8 +152,8 @@ func TestSecondCallAfterTransportFailure(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	_, _, _ = c.Pub(context.Background(), "orders", "", []byte("x"))
-	_, _, err := c.Pub(context.Background(), "orders", "", []byte("x"))
+	_, _, _ = c.Pub(context.Background(), "orders", "", "", []byte("x"))
+	_, _, err := c.Pub(context.Background(), "orders", "", "", []byte("x"))
 	if !errors.Is(err, ErrClosed) {
 		t.Fatalf("second call after blowup: want ErrClosed, got %v", err)
 	}

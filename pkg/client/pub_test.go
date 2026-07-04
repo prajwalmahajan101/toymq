@@ -16,7 +16,7 @@ func TestPub_OK(t *testing.T) {
 	}
 	defer c.Close()
 
-	_, dup, err := c.Pub(context.Background(), "orders", "k1", []byte("hello"))
+	_, dup, err := c.Pub(context.Background(), "orders", "k1", "", []byte("hello"))
 	if err != nil {
 		t.Fatalf("Pub: %v", err)
 	}
@@ -30,11 +30,11 @@ func TestPub_Dup(t *testing.T) {
 	c, _ := Dial(context.Background(), addr)
 	defer c.Close()
 
-	id1, _, err := c.Pub(context.Background(), "orders", "k1", []byte("a"))
+	id1, _, err := c.Pub(context.Background(), "orders", "k1", "", []byte("a"))
 	if err != nil {
 		t.Fatalf("first Pub: %v", err)
 	}
-	id2, dup, err := c.Pub(context.Background(), "orders", "k1", []byte("a"))
+	id2, dup, err := c.Pub(context.Background(), "orders", "k1", "", []byte("a"))
 	if err != nil {
 		t.Fatalf("second Pub: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestPub_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			id, _, err := c.Pub(context.Background(), "orders", "", []byte("x"))
+			id, _, err := c.Pub(context.Background(), "orders", "", "", []byte("x"))
 			if err != nil {
 				t.Errorf("Pub: %v", err)
 				return
@@ -84,12 +84,12 @@ func TestPub_ContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, err := c.Pub(ctx, "orders", "", []byte("x"))
+	_, _, err := c.Pub(ctx, "orders", "", "", []byte("x"))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want Canceled, got %v", err)
 	}
 
-	if _, _, err := c.Pub(context.Background(), "orders", "", []byte("ok")); err != nil {
+	if _, _, err := c.Pub(context.Background(), "orders", "", "", []byte("ok")); err != nil {
 		t.Fatalf("post-cancel Pub: %v", err)
 	}
 }
@@ -99,7 +99,7 @@ func TestPub_AfterClose(t *testing.T) {
 	c, _ := Dial(context.Background(), addr)
 	_ = c.Close()
 
-	_, _, err := c.Pub(context.Background(), "orders", "", []byte("x"))
+	_, _, err := c.Pub(context.Background(), "orders", "", "", []byte("x"))
 	if !errors.Is(err, ErrClosed) {
 		t.Fatalf("want ErrClosed, got %v", err)
 	}
@@ -110,7 +110,7 @@ func TestPub_ClosesCleanly(t *testing.T) {
 	c, _ := Dial(context.Background(), addr)
 
 	for range 10 {
-		if _, _, err := c.Pub(context.Background(), "orders", "", []byte("x")); err != nil {
+		if _, _, err := c.Pub(context.Background(), "orders", "", "", []byte("x")); err != nil {
 			t.Fatalf("Pub: %v", err)
 		}
 	}

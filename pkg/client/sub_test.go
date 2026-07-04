@@ -16,7 +16,7 @@ func TestSub_DeliversPubs(t *testing.T) {
 	defer sub.Close()
 
 	for _, p := range [][]byte{[]byte("a"), []byte("b"), []byte("c")} {
-		if _, _, err := pub.Pub(context.Background(), "orders", "", p); err != nil {
+		if _, _, err := pub.Pub(context.Background(), "orders", "", "", p); err != nil {
 			t.Fatalf("Pub: %v", err)
 		}
 	}
