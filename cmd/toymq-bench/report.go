@@ -66,8 +66,8 @@ func idx(n, p int) int {
 // writeReport emits the human-readable stats block. Fields are
 // labelled and tab-aligned so the output stays grep-friendly.
 func writeReport(w io.Writer, s Stats, cfg benchConfig) {
-	fmt.Fprintf(w, "toymq-bench  addr=%s  topic=%s  producers=%d  msgs=%d  size=%d\n",
-		cfg.Addr, cfg.Topic, cfg.Producers, cfg.Msgs, cfg.Size)
+	fmt.Fprintf(w, "toymq-bench  addr=%s  topic=%s  producers=%d  msgs=%d  size=%d  fsync=%s\n",
+		cfg.Addr, cfg.Topic, cfg.Producers, cfg.Msgs, cfg.Size, cfg.Fsync)
 	fmt.Fprintf(w, "elapsed     %s\n", s.Elapsed.Round(time.Millisecond))
 	fmt.Fprintf(w, "throughput  %.1f msg/s   %.2f MiB/s\n", s.Throughput, s.MiBPerSec)
 	fmt.Fprintf(w, "latency     min=%s  p50=%s  p95=%s  p99=%s  max=%s\n",
