@@ -58,7 +58,7 @@ func TestServerPubOK(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 
-	go func() { conn.Write([]byte("PUB orders - 5\nhello\n")) }()
+	go func() { conn.Write([]byte("PUB orders - - 5\nhello\n")) }()
 
 	br := bufio.NewReader(conn)
 	line, err := br.ReadString('\n')
@@ -174,7 +174,7 @@ func TestServerGoroutineLeak(t *testing.T) {
 			if err != nil {
 				return
 			}
-			fmt.Fprintf(c, "PUB orders - 2\nok\n")
+			fmt.Fprintf(c, "PUB orders - - 2\nok\n")
 			bufio.NewReader(c).ReadString('\n')
 			c.Close()
 		})
@@ -228,7 +228,7 @@ func TestServerTLSRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tls dial: %v", err)
 	}
-	go func() { conn.Write([]byte("PUB orders - 5\nhello\n")) }()
+	go func() { conn.Write([]byte("PUB orders - - 5\nhello\n")) }()
 
 	br := bufio.NewReader(conn)
 	line, err := br.ReadString('\n')
