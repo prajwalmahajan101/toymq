@@ -9,11 +9,11 @@ import (
 	"github.com/prajwalmahajan101/toymq/internal/wal"
 )
 
-// makeTopicForOffsets builds a Topic standalone (without going through
-// Broker) so the offsets-only tests don't have to spin up the full
-// broker lifecycle. The WAL handle is opened against dataDir so
-// flushOffsets resolves the right path.
-func makeTopicForOffsets(t *testing.T, dataDir, name string) *Topic {
+// makePartitionForOffsets builds a Partition standalone (without going
+// through Broker) so the offsets-only tests don't have to spin up the full
+// broker lifecycle. The WAL handle and offsets file both live in the flat
+// topic dir (a 1-partition topic), so flush/load resolve the right path.
+func makePartitionForOffsets(t *testing.T, dataDir, name string) *Partition {
 	t.Helper()
 	topicDir := filepath.Join(dataDir, "topics", name)
 	if err := os.MkdirAll(topicDir, 0o755); err != nil {
@@ -24,12 +24,12 @@ func makeTopicForOffsets(t *testing.T, dataDir, name string) *Topic {
 		t.Fatalf("wal.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = log.Close() })
-	return newTopic(name, log, NewDedupeIndex(16))
+	return newPartition(name, 0, topicDir, log, NewDedupeIndex(16))
 }
 
 func TestFlushOffsetsCreateFails(t *testing.T) {
 	dataDir := t.TempDir()
-	topic := makeTopicForOffsets(t, dataDir, "orders")
+	p := makePartitionForOffsets(t, dataDir, "orders")
 
 	// Replace the topic dir with a regular file so os.Create on
 	// offsets.json.tmp fails. We can't chmod-deny the dir here
@@ -43,14 +43,14 @@ func TestFlushOffsetsCreateFails(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if err := topic.flushOffsets(dataDir); err == nil {
+	if err := p.flushOffsets(); err == nil {
 		t.Fatal("flushOffsets: expected error, got nil")
 	}
 }
 
 func TestLoadOffsetsCorruptJSON(t *testing.T) {
 	dataDir := t.TempDir()
-	topic := makeTopicForOffsets(t, dataDir, "orders")
+	p := makePartitionForOffsets(t, dataDir, "orders")
 
 	// Write invalid JSON to offsets.json.
 	path := filepath.Join(dataDir, "topics", "orders", "offsets.json")
@@ -58,7 +58,7 @@ func TestLoadOffsetsCorruptJSON(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	err := topic.loadOffsets(dataDir)
+	err := p.loadOffsets()
 	if err == nil {
 		t.Fatal("loadOffsets: expected decode error, got nil")
 	}
@@ -70,10 +70,10 @@ func TestLoadOffsetsCorruptJSON(t *testing.T) {
 
 func TestLoadOffsetsMissingFileIsFresh(t *testing.T) {
 	dataDir := t.TempDir()
-	topic := makeTopicForOffsets(t, dataDir, "orders")
+	p := makePartitionForOffsets(t, dataDir, "orders")
 
 	// No offsets.json yet — treated as a fresh consumer, returns nil.
-	if err := topic.loadOffsets(dataDir); err != nil {
+	if err := p.loadOffsets(); err != nil {
 		t.Fatalf("loadOffsets on missing file: %v", err)
 	}
 }

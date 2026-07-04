@@ -24,7 +24,7 @@ func newTestBroker(t *testing.T) *Broker {
 
 func mustPublish(t *testing.T, b *Broker, topic, key string, payload []byte) uint64 {
 	t.Helper()
-	id, dup, err := b.Publish(topic, key, payload)
+	id, dup, err := bpub(b, topic, key, payload)
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestSubscribeReceivesNewPublish(t *testing.T) {
 	ctx := t.Context()
 
 	ch := make(chan *Inflight, 8)
-	if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+	if _, err := bsub(b, ctx, "orders", "c1", ch); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
@@ -75,7 +75,7 @@ func TestSubscribeReadsBacklog(t *testing.T) {
 	id1 := mustPublish(t, b, "orders", "", []byte("second"))
 
 	ch := make(chan *Inflight, 8)
-	if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+	if _, err := bsub(b, ctx, "orders", "c1", ch); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestAckAdvancesLastAcked(t *testing.T) {
 	ctx := t.Context()
 
 	ch := make(chan *Inflight, 8)
-	if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+	if _, err := bsub(b, ctx, "orders", "c1", ch); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
@@ -104,14 +104,14 @@ func TestAckAdvancesLastAcked(t *testing.T) {
 		if inf.MsgID != i {
 			t.Fatalf("got msg %d, want %d", inf.MsgID, i)
 		}
-		if err := b.Ack("orders", "c1", inf.MsgID); err != nil {
+		if err := back(b, "orders", "c1", inf.MsgID); err != nil {
 			t.Fatalf("Ack %d: %v", inf.MsgID, err)
 		}
 	}
 
 	// Reach into the consumer to verify lastAcked.
 	topic, _ := b.getOrCreateTopic("orders")
-	c := topic.getOrCreateConsumer("c1")
+	c := part0(topic).getOrCreateConsumer("c1")
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.lastAcked != 2 {
@@ -130,7 +130,7 @@ func TestAckOutOfOrderDrains(t *testing.T) {
 	ctx := t.Context()
 
 	ch := make(chan *Inflight, 8)
-	if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+	if _, err := bsub(b, ctx, "orders", "c1", ch); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
@@ -143,12 +143,12 @@ func TestAckOutOfOrderDrains(t *testing.T) {
 
 	// Ack out of order: 2, 0, 1 — then 4, 3.
 	for _, id := range []uint64{2, 0, 1} {
-		if err := b.Ack("orders", "c1", id); err != nil {
+		if err := back(b, "orders", "c1", id); err != nil {
 			t.Fatalf("Ack %d: %v", id, err)
 		}
 	}
 	topic, _ := b.getOrCreateTopic("orders")
-	c := topic.getOrCreateConsumer("c1")
+	c := part0(topic).getOrCreateConsumer("c1")
 	c.mu.Lock()
 	got := c.lastAcked
 	c.mu.Unlock()
@@ -157,7 +157,7 @@ func TestAckOutOfOrderDrains(t *testing.T) {
 	}
 
 	for _, id := range []uint64{4, 3} {
-		if err := b.Ack("orders", "c1", id); err != nil {
+		if err := back(b, "orders", "c1", id); err != nil {
 			t.Fatalf("Ack %d: %v", id, err)
 		}
 	}
@@ -178,7 +178,7 @@ func TestNackRedeliversImmediately(t *testing.T) {
 	ctx := t.Context()
 
 	ch := make(chan *Inflight, 8)
-	if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+	if _, err := bsub(b, ctx, "orders", "c1", ch); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
@@ -192,7 +192,7 @@ func TestNackRedeliversImmediately(t *testing.T) {
 		t.Fatalf("first Attempts = %d, want 1", first.Attempts)
 	}
 
-	if err := b.Nack("orders", "c1", id, ch); err != nil {
+	if err := bnack(b, "orders", "c1", id, ch); err != nil {
 		t.Fatalf("Nack: %v", err)
 	}
 
@@ -211,7 +211,7 @@ func TestSubscribeCtxCancelRollsBackInflight(t *testing.T) {
 
 	// Unbuffered channel + no reader → runDelivery blocks at sendCh <- inf.
 	ch := make(chan *Inflight)
-	if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+	if _, err := bsub(b, ctx, "orders", "c1", ch); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
@@ -222,7 +222,7 @@ func TestSubscribeCtxCancelRollsBackInflight(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		topic, _ := b.getOrCreateTopic("orders")
-		c := topic.getOrCreateConsumer("c1")
+		c := part0(topic).getOrCreateConsumer("c1")
 		c.mu.Lock()
 		inflightCount := len(c.inflight)
 		c.mu.Unlock()
@@ -240,7 +240,7 @@ func TestSubscribeCtxCancelRollsBackInflight(t *testing.T) {
 	deadline = time.Now().Add(time.Second)
 	for {
 		topic, _ := b.getOrCreateTopic("orders")
-		c := topic.getOrCreateConsumer("c1")
+		c := part0(topic).getOrCreateConsumer("c1")
 		c.mu.Lock()
 		inflightCount := len(c.inflight)
 		c.mu.Unlock()
@@ -259,11 +259,11 @@ func TestNackUnknownMsg(t *testing.T) {
 	ctx := t.Context()
 
 	ch := make(chan *Inflight, 1)
-	if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+	if _, err := bsub(b, ctx, "orders", "c1", ch); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
-	if err := b.Nack("orders", "c1", 999, ch); err == nil {
+	if err := bnack(b, "orders", "c1", 999, ch); err == nil {
 		t.Fatal("Nack of unknown msg: expected error, got nil")
 	}
 }
@@ -313,16 +313,16 @@ func TestPublishOnBlockedTopicFails(t *testing.T) {
 	}
 	t.Cleanup(func() { b.Close() })
 
-	if _, _, err := b.Publish("blocked", "", []byte("nope")); err == nil {
+	if _, _, err := bpub(b, "blocked", "", []byte("nope")); err == nil {
 		t.Fatal("Publish to blocked topic: expected error, got nil")
 	}
-	if err := b.Ack("blocked", "c1", 0); err == nil {
+	if err := back(b, "blocked", "c1", 0); err == nil {
 		t.Fatal("Ack on blocked topic: expected error, got nil")
 	}
-	if err := b.Nack("blocked", "c1", 0, make(chan *Inflight, 1)); err == nil {
+	if err := bnack(b, "blocked", "c1", 0, make(chan *Inflight, 1)); err == nil {
 		t.Fatal("Nack on blocked topic: expected error, got nil")
 	}
-	if _, err := b.Subscribe(context.Background(), "blocked", "c1", make(chan *Inflight, 1)); err == nil {
+	if _, err := bsub(b, context.Background(), "blocked", "c1", make(chan *Inflight, 1)); err == nil {
 		t.Fatal("Subscribe on blocked topic: expected error, got nil")
 	}
 }
@@ -330,7 +330,7 @@ func TestPublishOnBlockedTopicFails(t *testing.T) {
 func TestPublishDedupeReturnsOriginalID(t *testing.T) {
 	b := newTestBroker(t)
 
-	id1, dup1, err := b.Publish("orders", "key-A", []byte("first"))
+	id1, dup1, err := bpub(b, "orders", "key-A", []byte("first"))
 	if err != nil {
 		t.Fatalf("Publish 1: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestPublishDedupeReturnsOriginalID(t *testing.T) {
 		t.Errorf("first publish: dup = true, want false")
 	}
 
-	id2, dup2, err := b.Publish("orders", "key-A", []byte("second"))
+	id2, dup2, err := bpub(b, "orders", "key-A", []byte("second"))
 	if err != nil {
 		t.Fatalf("Publish 2: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestOffsetsPersistAcrossRestart(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		ch := make(chan *Inflight, 8)
-		if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+		if _, err := bsub(b, ctx, "orders", "c1", ch); err != nil {
 			t.Fatalf("Subscribe: %v", err)
 		}
 
@@ -371,7 +371,7 @@ func TestOffsetsPersistAcrossRestart(t *testing.T) {
 		}
 		for range 3 {
 			inf := recvInflight(t, ch, time.Second)
-			if err := b.Ack("orders", "c1", inf.MsgID); err != nil {
+			if err := back(b, "orders", "c1", inf.MsgID); err != nil {
 				t.Fatalf("Ack %d: %v", inf.MsgID, err)
 			}
 		}
@@ -393,7 +393,7 @@ func TestOffsetsPersistAcrossRestart(t *testing.T) {
 
 		ctx := t.Context()
 		ch := make(chan *Inflight, 8)
-		if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+		if _, err := bsub(b, ctx, "orders", "c1", ch); err != nil {
 			t.Fatalf("Subscribe after reopen: %v", err)
 		}
 
@@ -417,7 +417,7 @@ func TestOffsetsPersistAboveLast(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		ch := make(chan *Inflight, 8)
-		if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+		if _, err := bsub(b, ctx, "orders", "c1", ch); err != nil {
 			t.Fatalf("Subscribe: %v", err)
 		}
 
@@ -430,10 +430,10 @@ func TestOffsetsPersistAboveLast(t *testing.T) {
 		}
 
 		// Ack only 0 and 2 — lastAcked should be 0, aboveLast = {2}.
-		if err := b.Ack("orders", "c1", 0); err != nil {
+		if err := back(b, "orders", "c1", 0); err != nil {
 			t.Fatalf("Ack 0: %v", err)
 		}
-		if err := b.Ack("orders", "c1", 2); err != nil {
+		if err := back(b, "orders", "c1", 2); err != nil {
 			t.Fatalf("Ack 2: %v", err)
 		}
 
@@ -452,7 +452,7 @@ func TestOffsetsPersistAboveLast(t *testing.T) {
 		t.Cleanup(func() { b.Close() })
 
 		topic, _ := b.getOrCreateTopic("orders")
-		c := topic.getOrCreateConsumer("c1")
+		c := part0(topic).getOrCreateConsumer("c1")
 		c.mu.Lock()
 		lastAcked := c.lastAcked
 		_, hasTwo := c.aboveLast[2]
@@ -498,16 +498,16 @@ func TestDedupeIndexRebuiltFromWALOnRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getOrCreateTopic: %v", err)
 	}
-	if got, ok := top.dedupe.Lookup("key-1"); !ok || got != id1 {
+	if got, ok := part0(top).dedupe.Lookup("key-1"); !ok || got != id1 {
 		t.Errorf("Lookup(key-1) = (%d, %v), want (%d, true)", got, ok, id1)
 	}
-	if got, ok := top.dedupe.Lookup("key-2"); !ok || got != id2 {
+	if got, ok := part0(top).dedupe.Lookup("key-2"); !ok || got != id2 {
 		t.Errorf("Lookup(key-2) = (%d, %v), want (%d, true)", got, ok, id2)
 	}
 
 	// Re-publishing key-1 must return the original id as a duplicate,
 	// with no new WAL record appended.
-	gotID, dup, err := b2.Publish("orders", "key-1", []byte("one-again"))
+	gotID, dup, err := bpub(b2, "orders", "key-1", []byte("one-again"))
 	if err != nil {
 		t.Fatalf("Publish key-1 again: %v", err)
 	}
@@ -547,12 +547,12 @@ func TestDedupeRebuildRespectsLRUCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getOrCreateTopic: %v", err)
 	}
-	if _, ok := top.dedupe.Lookup("key-0"); ok {
+	if _, ok := part0(top).dedupe.Lookup("key-0"); ok {
 		t.Errorf("key-0 present after restart; expected it to be evicted (cap=%d)", dedupeCap)
 	}
 	for i := 1; i < 4; i++ {
 		key := "key-" + string(rune('0'+i))
-		if _, ok := top.dedupe.Lookup(key); !ok {
+		if _, ok := part0(top).dedupe.Lookup(key); !ok {
 			t.Errorf("%s missing after restart; expected retained (cap=%d)", key, dedupeCap)
 		}
 	}
@@ -565,13 +565,13 @@ func TestDedupeRebuildRespectsLRUCap(t *testing.T) {
 // ticker fires quickly.
 func TestBatchedSyncDeliversEndToEnd(t *testing.T) {
 	sc := SyncConfig{Mode: wal.SyncBatched, Interval: 2 * time.Millisecond}
-	b, err := newBroker(t.TempDir(), testDedupeCap, defaultVisibilityTimeout, 20*time.Millisecond, sc)
+	b, err := newBroker(t.TempDir(), testDedupeCap, 1, defaultVisibilityTimeout, 20*time.Millisecond, sc)
 	if err != nil {
 		t.Fatalf("newBroker: %v", err)
 	}
 	t.Cleanup(func() { b.Close() })
 
-	id, dup, err := b.Publish("orders", "k1", []byte("batched-payload"))
+	id, dup, err := bpub(b, "orders", "k1", []byte("batched-payload"))
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
@@ -582,7 +582,7 @@ func TestBatchedSyncDeliversEndToEnd(t *testing.T) {
 	ch := make(chan *Inflight, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := b.Subscribe(ctx, "orders", "c1", ch); err != nil {
+	if _, err := bsub(b, ctx, "orders", "c1", ch); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	inf := recvInflight(t, ch, 2*time.Second)

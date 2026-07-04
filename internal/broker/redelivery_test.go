@@ -17,11 +17,11 @@ func TestRedeliverAfterVisibilityTimeout(t *testing.T) {
 	sendCh := make(chan *Inflight, 4)
 	ctx := t.Context()
 
-	if _, err := b.Subscribe(ctx, "orders", "c1", sendCh); err != nil {
+	if _, err := bsub(b, ctx, "orders", "c1", sendCh); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	id, dup, err := b.Publish("orders", "", []byte("hello"))
+	id, dup, err := bpub(b, "orders", "", []byte("hello"))
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
