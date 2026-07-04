@@ -58,12 +58,18 @@ func TestChaosSurvivesSIGKILL(t *testing.T) {
 	dataDir := t.TempDir()
 	addr := pickFreeAddr(t)
 
+	// The no-acked-loss assertion below is the v2 M2 batched-fsync risk
+	// test: set CHAOS_FSYNC=batched to run the same SIGKILL soak with the
+	// broker in group-commit mode. Every MsgID the producer received OK
+	// for must survive (only un-acked, un-fsynced writes may be lost).
+	fsyncArgs := resolveFsyncArgs(t)
+
 	// brokerErr collects stderr from three concurrent writers: the
 	// broker subprocess (via io.Copy in supervisor) and the producer
 	// + consumer diagnostic logs. bytes.Buffer is not goroutine-safe,
 	// so wrap it.
 	brokerErr := &syncBuffer{}
-	sup := newSupervisor(brokerBinary, dataDir, addr, brokerErr)
+	sup := newSupervisor(brokerBinary, dataDir, addr, brokerErr, fsyncArgs...)
 
 	if err := sup.start(); err != nil {
 		t.Fatalf("initial broker start: %v", err)
@@ -139,6 +145,28 @@ func TestChaosSurvivesSIGKILL(t *testing.T) {
 		if brokerErr.Len() > 0 {
 			t.Logf("chaos: tail of broker stderr:\n%s", tailBytes(brokerErr.Bytes(), 4096))
 		}
+	}
+}
+
+// resolveFsyncArgs turns CHAOS_FSYNC into broker flags. Empty or
+// "per-message" → no extra flags (default). "batched" adds -fsync
+// batched plus a fast group-commit window; "none" adds -fsync none.
+func resolveFsyncArgs(t *testing.T) []string {
+	t.Helper()
+	mode := os.Getenv("CHAOS_FSYNC")
+	switch mode {
+	case "", "per-message":
+		t.Logf("chaos: fsync=per-message")
+		return nil
+	case "batched":
+		t.Logf("chaos: fsync=batched interval=5ms")
+		return []string{"-fsync", "batched", "-fsync-interval", "5ms"}
+	case "none":
+		t.Logf("chaos: fsync=none (best-effort; acked data may be lost on power loss)")
+		return []string{"-fsync", "none"}
+	default:
+		t.Fatalf("invalid CHAOS_FSYNC %q: want per-message|batched|none", mode)
+		return nil
 	}
 }
 
