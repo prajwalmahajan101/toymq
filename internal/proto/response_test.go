@@ -35,13 +35,13 @@ func TestWriteResponses(t *testing.T) {
 		},
 		{
 			name: "MSG",
-			want: "MSG orders 7 5\nhello\n",
-			run:  func(bw *bufio.Writer) error { return WriteMsg(bw, "orders", 7, []byte("hello")) },
+			want: "MSG orders 2 7 5\nhello\n",
+			run:  func(bw *bufio.Writer) error { return WriteMsg(bw, "orders", 2, 7, []byte("hello")) },
 		},
 		{
 			name: "MSG empty payload",
-			want: "MSG orders 0 0\n\n",
-			run:  func(bw *bufio.Writer) error { return WriteMsg(bw, "orders", 0, nil) },
+			want: "MSG orders 0 0 0\n\n",
+			run:  func(bw *bufio.Writer) error { return WriteMsg(bw, "orders", 0, 0, nil) },
 		},
 		{
 			name: "ERR",
@@ -93,7 +93,7 @@ func TestWriteResponsesErrors(t *testing.T) {
 			// when its buffer is empty), so MSG only has ~15 underlying
 			// writes total even with a long payload.
 			name:      "MSG",
-			run:       func(bw *bufio.Writer) error { return WriteMsg(bw, "orders", 7, bytes.Repeat([]byte("a"), 64)) },
+			run:       func(bw *bufio.Writer) error { return WriteMsg(bw, "orders", 2, 7, bytes.Repeat([]byte("a"), 64)) },
 			failAfter: []int{0, 1, 5, 10, 12, 14},
 		},
 		{
@@ -146,8 +146,8 @@ func TestPubRoundTrip(t *testing.T) {
 	// the server reads them. So the round-trip we can do here is:
 	// craft wire bytes by hand, ReadCommand, assert.
 	//
-	// For OK/MSG/ERR/DUP we don't have a parser on the client side
-	// in this codebase, so there's nothing to round-trip yet.
-	// TODO: Complete this later
-	t.Skip("no client-side response parser yet; covered by integration tests later")
+	// OK/MSG/ERR/DUP round-tripping is exercised where the client-side
+	// response parser lives (pkg/client/frame.go) and end-to-end in the
+	// integration suite, not here.
+	t.Skip("response round-trip is covered in pkg/client and integration tests")
 }
