@@ -13,7 +13,7 @@
 | #    | Title                                                | Status   |
 | ---- | ---------------------------------------------------- | -------- |
 | 0001 | [Framed record format for the WAL](./0001-framed-record-format.md) | Accepted |
-| 0002 | [Per-message fsync with atomic committed offset](./0002-per-message-fsync.md) | Accepted |
+| 0002 | [Per-message fsync with atomic committed offset](./0002-per-message-fsync.md) | Superseded by 0019 |
 | 0003 | [Crash recovery by full segment scan](./0003-recovery-by-scan.md) | Accepted |
 | 0004 | [Sealed Command interface for the wire protocol](./0004-proto-sealed-types.md) | Accepted |
 | 0005 | [Lazy topic registry with double-checked locking](./0005-broker-lazy-topic-registry.md) | Accepted |
@@ -30,6 +30,7 @@
 | 0016 | [CI lint + Go version matrix + local hook](./0016-ci-lint-and-matrix.md) | Accepted |
 | 0017 | [Release automation with GoReleaser](./0017-release-automation.md) | Accepted |
 | 0018 | [Dedupe LRU recovery from the WAL](./0018-dedupe-recovery-from-wal.md) | Accepted |
+| 0019 | [Batched-fsync mode (group commit)](./0019-batched-fsync-mode.md) | Accepted |
 
 Each ADR is a short snapshot of *why* a decision was made, captured at the
 time the decision landed in code. They are not living docs — when a decision
