@@ -30,6 +30,7 @@ type supervisor struct {
 	dataDir    string
 	addr       string
 	stderr     io.Writer
+	extraArgs  []string // e.g. -fsync batched; applied to every spawn
 
 	mu  sync.Mutex
 	cmd *exec.Cmd
@@ -37,23 +38,25 @@ type supervisor struct {
 	restarts atomic.Int64
 }
 
-func newSupervisor(binaryPath, dataDir, addr string, stderr io.Writer) *supervisor {
+func newSupervisor(binaryPath, dataDir, addr string, stderr io.Writer, extraArgs ...string) *supervisor {
 	return &supervisor{
 		binaryPath: binaryPath,
 		dataDir:    dataDir,
 		addr:       addr,
 		stderr:     stderr,
+		extraArgs:  extraArgs,
 	}
 }
 
 // start launches the broker and blocks until it accepts TCP. Returns
 // an error if the bind never completes within supervisorBootTimeout.
 func (s *supervisor) start() error {
-	cmd := exec.Command(s.binaryPath,
+	args := append([]string{
 		"-addr", s.addr,
 		"-data-dir", s.dataDir,
 		"-shutdown-timeout", "1s",
-	)
+	}, s.extraArgs...)
+	cmd := exec.Command(s.binaryPath, args...)
 	cmd.Stderr = s.stderr
 	cmd.Stdout = s.stderr // merge both into the chaos test's stderr capture
 	if err := cmd.Start(); err != nil {
