@@ -233,6 +233,17 @@ func (b *Broker) getOrCreateTopic(name string) (*Topic, error) {
 	return t, nil
 }
 
+// EnsureTopic creates (or recovers) the topic if it is absent, returning
+// any error from opening its WAL. It lets a caller validate a topic
+// before committing to a response — e.g. the session queues SUB's OK
+// only after EnsureTopic succeeds, so the OK is enqueued before
+// Subscribe starts the delivery goroutine (ordering the OK ahead of the
+// first MSG).
+func (b *Broker) EnsureTopic(topic string) error {
+	_, err := b.getOrCreateTopic(topic)
+	return err
+}
+
 // Publish appends payload to topic and returns (msgID, duplicate?,
 // err). A non-empty key activates dedupe: a second publish with the
 // same key returns the original MsgID and duplicate=true without a
