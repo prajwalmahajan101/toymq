@@ -141,7 +141,7 @@ toymqctl sub orders consumer-2 --max-msgs 1
 ## Wire protocol
 
 Line-oriented, length-prefixed for binary payloads. The wire is
-deliberately small: four verbs, four response shapes. Every frame
+deliberately small: a handful of verbs, four response shapes. Every frame
 ends with `\n`. Bytes between framing are arbitrary.
 
 ### Commands (client → broker)
@@ -154,6 +154,8 @@ ends with `\n`. Bytes between framing are arbitrary.
 | `SUB` | `SUB <topic> <consumer-id>\n` | `<topic>` = all partitions (fan-in); `<topic>#<n>` = one; `<topic>#*` = all. Replays each partition from its `lastAcked + 1`. |
 | `ACK` | `ACK <consumer-id> <partition> <msg-id>\n` | Confirms delivery on `<partition>` (MsgIDs are partition-local); advances that partition's `lastAcked` when the prefix is contiguous. |
 | `NACK` | `NACK <consumer-id> <partition> <msg-id>\n` | Returns the msg to pending; redelivered on the next `runDelivery` iteration. |
+| `PAUSE` | `PAUSE\n` | Suspends delivery for this connection's subscription — every partition of a `SUB #*` (v2 M5). Halts redelivery too. `ERR NO_SUB` without a prior `SUB`. |
+| `RESUME` | `RESUME\n` | Lifts a prior `PAUSE`; delivery continues up to the receive window. |
 
 ### Responses (broker → client)
 
@@ -166,6 +168,17 @@ ends with `\n`. Bytes between framing are arbitrary.
 
 Source of truth: [`internal/proto/parser.go`](./internal/proto/parser.go),
 [`internal/proto/response.go`](./internal/proto/response.go).
+
+### Flow control (v2.0)
+
+The broker delivers at most `--recv-window` (default 256) un-acked messages
+per `(topic, partition, consumer)` before pausing delivery; an `ACK` frees a
+slot and releases the next. This bounds inflight memory under a slow consumer
+regardless of the backlog — a `SUB <topic>#*` across N partitions is bounded
+by N × window. `PAUSE` / `RESUME` add explicit client-driven throttling on top
+(useful when the consumer's own downstream is saturated). See
+[ADR 0022](./docs/adr/0022-reader-flow-control.md); `pkg/client` exposes
+`Pause` / `Resume`.
 
 ### Handshake, auth, and TLS (v2.0)
 
