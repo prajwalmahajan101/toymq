@@ -21,6 +21,13 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	DedupeCap       int
 
+	// RecvWindow is the per-(partition,consumer) receive window: the
+	// broker delivers at most this many un-acked messages to a consumer
+	// before pausing delivery until an ACK frees a slot (ADR 0022). A
+	// SUB #* across N partitions is therefore bounded by N*RecvWindow.
+	// Min 1.
+	RecvWindow int
+
 	// DefaultPartitions is the partition count applied to a topic
 	// auto-created by a first PUB/SUB (ADR 0021). Existing on-disk topics
 	// keep their recovered count; CREATE overrides per topic. Min 1.
@@ -62,6 +69,7 @@ const (
 	DefaultLogFormat         = "text"
 	DefaultShutdownTimeout   = 5 * time.Second
 	DefaultDedupeCap         = 4096
+	DefaultRecvWindow        = 256
 	DefaultDefaultPartitions = 1
 	DefaultFsyncMode         = "per-message"
 	DefaultFsyncInterval     = wal.DefaultSyncInterval
@@ -91,6 +99,7 @@ func Parse(args []string, stderr io.Writer) (*Config, error) {
 	fs.StringVar(&cfg.LogFormat, "log-format", DefaultLogFormat, "text|json")
 	fs.DurationVar(&cfg.ShutdownTimeout, "shutdown-timeout", DefaultShutdownTimeout, "graceful drain budget")
 	fs.IntVar(&cfg.DedupeCap, "dedupe-cap", DefaultDedupeCap, "per-topic dedupe LRU size")
+	fs.IntVar(&cfg.RecvWindow, "recv-window", DefaultRecvWindow, "per-consumer receive window: max un-acked messages before delivery pauses (>=1)")
 	fs.IntVar(&cfg.DefaultPartitions, "default-partitions", DefaultDefaultPartitions, "partition count for auto-created topics (>=1)")
 	fs.StringVar(&cfg.FsyncMode, "fsync", DefaultFsyncMode, "WAL durability: per-message|batched|none")
 	fs.DurationVar(&cfg.FsyncInterval, "fsync-interval", DefaultFsyncInterval, "group-commit window for -fsync=batched")
@@ -132,6 +141,9 @@ func (c *Config) validate() error {
 	}
 	if c.DedupeCap <= 0 {
 		return fmt.Errorf("dedupe-cap %d: must be > 0", c.DedupeCap)
+	}
+	if c.RecvWindow < 1 {
+		return fmt.Errorf("recv-window %d: must be >= 1", c.RecvWindow)
 	}
 	if c.DefaultPartitions < 1 {
 		return fmt.Errorf("default-partitions %d: must be >= 1", c.DefaultPartitions)
