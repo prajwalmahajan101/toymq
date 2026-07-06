@@ -24,7 +24,7 @@ func makePartitionForOffsets(t *testing.T, dataDir, name string) *Partition {
 		t.Fatalf("wal.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = log.Close() })
-	return newPartition(name, 0, topicDir, log, NewDedupeIndex(16))
+	return newPartition(name, 0, topicDir, log, NewDedupeIndex(16), defaultRecvWindow)
 }
 
 func TestFlushOffsetsCreateFails(t *testing.T) {

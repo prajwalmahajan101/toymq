@@ -32,19 +32,24 @@ type Partition struct {
 	log    *wal.Log
 	dedupe *DedupeIndex
 
+	// window is the per-consumer receive window applied to every Consumer
+	// this partition creates (ADR 0022, --recv-window).
+	window int
+
 	pubMu sync.Mutex
 
 	consumersMu sync.RWMutex
 	consumers   map[string]*Consumer
 }
 
-func newPartition(topic string, id int, dir string, log *wal.Log, dedupe *DedupeIndex) *Partition {
+func newPartition(topic string, id int, dir string, log *wal.Log, dedupe *DedupeIndex, window int) *Partition {
 	return &Partition{
 		topic:     topic,
 		id:        id,
 		dir:       dir,
 		log:       log,
 		dedupe:    dedupe,
+		window:    window,
 		consumers: make(map[string]*Consumer),
 	}
 }
@@ -110,7 +115,7 @@ func (p *Partition) getOrCreateConsumer(id string) *Consumer {
 	if c, ok := p.consumers[id]; ok {
 		return c
 	}
-	c = newConsumer(id, p)
+	c = newConsumer(id, p, p.window)
 	p.consumers[id] = c
 	return c
 }
@@ -136,6 +141,15 @@ func (p *Partition) runDelivery(ctx context.Context, c *Consumer, sub *Subscript
 	defer reader.Close()
 
 	for {
+		// Flow control: block until the receive window has room and the
+		// consumer is not PAUSEd (ADR 0022). Gating before reading the next
+		// record keeps len(inflight) <= window, which is the memory bound.
+		// Redelivery/Nack re-push already-counted inflight and bypass this
+		// gate, so they never stall behind a full window.
+		if !c.awaitCredit(ctx) {
+			return
+		}
+
 		rec, err := reader.Next(ctx)
 		if err != nil {
 			return

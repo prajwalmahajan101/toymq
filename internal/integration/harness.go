@@ -17,7 +17,11 @@ import (
 )
 
 const (
-	defaultDedupeCap         = 1024
+	defaultDedupeCap = 1024
+	// defaultRecvWindow is generous so pre-M5 tests (which deliver many
+	// messages before acking) are unaffected by flow control; tests that
+	// exercise the window set a small one via withRecvWindow (ADR 0022).
+	defaultRecvWindow        = 4096
 	defaultVisibility        = 100 * time.Millisecond
 	defaultRedeliverInterval = 20 * time.Millisecond
 	defaultAddrPollInterval  = 2 * time.Millisecond
@@ -27,6 +31,7 @@ const (
 
 type harnessOpts struct {
 	dedupeCap         int
+	recvWindow        int
 	visibility        time.Duration
 	redeliverInterval time.Duration
 	defaultPartitions int
@@ -41,6 +46,12 @@ func withVisibility(d time.Duration) harnessOpt {
 
 func withRedeliverInterval(d time.Duration) harnessOpt {
 	return func(o *harnessOpts) { o.redeliverInterval = d }
+}
+
+// withRecvWindow sets the per-consumer receive window (ADR 0022). Used by
+// flow-control tests that need a small, observable window.
+func withRecvWindow(n int) harnessOpt {
+	return func(o *harnessOpts) { o.recvWindow = n }
 }
 
 // withDefaultPartitions makes auto-created topics use n partitions (ADR
@@ -63,6 +74,7 @@ func startBroker(t *testing.T, opts ...harnessOpt) *harness {
 	t.Helper()
 	resolved := harnessOpts{
 		dedupeCap:         defaultDedupeCap,
+		recvWindow:        defaultRecvWindow,
 		visibility:        defaultVisibility,
 		redeliverInterval: defaultRedeliverInterval,
 		defaultPartitions: 1,
@@ -97,9 +109,13 @@ func buildHarness(t *testing.T, opts harnessOpts) *harness {
 	if parts < 1 {
 		parts = 1
 	}
-	b, err := broker.NewWithTimingsPartitions(opts.dataDir, opts.dedupeCap, parts, opts.visibility, opts.redeliverInterval)
+	window := opts.recvWindow
+	if window < 1 {
+		window = defaultRecvWindow
+	}
+	b, err := broker.NewWithObservability(opts.dataDir, opts.dedupeCap, parts, window, opts.visibility, opts.redeliverInterval, broker.SyncConfig{}, nil, nil)
 	if err != nil {
-		t.Fatalf("broker.NewWithTimingsPartitions: %v", err)
+		t.Fatalf("broker.NewWithObservability: %v", err)
 	}
 
 	srv := server.New("127.0.0.1:0", b)
