@@ -33,6 +33,7 @@
 | 0019 | [Batched-fsync mode (group commit)](./0019-batched-fsync-mode.md) | Accepted |
 | 0020 | [HELLO handshake, bearer-token AUTH, and TLS](./0020-hello-auth-tls.md) | Accepted |
 | 0021 | [Single-node partitions](./0021-partitions-single-node.md) | Accepted |
+| 0022 | [Reader backpressure: receive window + PAUSE/RESUME](./0022-reader-flow-control.md) | Accepted |
 
 Each ADR is a short snapshot of *why* a decision was made, captured at the
 time the decision landed in code. They are not living docs — when a decision
