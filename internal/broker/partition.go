@@ -11,12 +11,23 @@ import (
 )
 
 // Subscription is the per-Subscribe handle. cancel stops the
-// delivery goroutine; done closes when that goroutine exits.
+// delivery goroutine; done closes when that goroutine exits. consumer is
+// the bound Consumer, exposed to the session (via SetPaused) so PAUSE/RESUME
+// can reach exactly the partitions this SUB covers without the session
+// touching the consumer registry (ADR 0022).
 type Subscription struct {
 	consumerID string
+	consumer   *Consumer
 	sendCh     chan<- *Inflight
 	cancel     context.CancelFunc
 	done       chan struct{}
+}
+
+// SetPaused suspends (true) or resumes (false) delivery for this
+// subscription's consumer. The session fans a single PAUSE/RESUME frame
+// across every Subscription of the connection (ADR 0022).
+func (s *Subscription) SetPaused(paused bool) {
+	s.consumer.setPaused(paused)
 }
 
 // Partition owns one WAL, dedupe LRU, and consumer registry — the unit
@@ -194,6 +205,7 @@ func (p *Partition) subscribe(ctx context.Context, consumerID string, sendCh cha
 
 	sub := &Subscription{
 		consumerID: consumerID,
+		consumer:   c,
 		sendCh:     sendCh,
 		cancel:     cancel,
 		done:       make(chan struct{}),
