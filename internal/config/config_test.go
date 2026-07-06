@@ -30,6 +30,9 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.DedupeCap != DefaultDedupeCap {
 		t.Errorf("DedupeCap = %d, want %d", cfg.DedupeCap, DefaultDedupeCap)
 	}
+	if cfg.RecvWindow != DefaultRecvWindow {
+		t.Errorf("RecvWindow = %d, want %d", cfg.RecvWindow, DefaultRecvWindow)
+	}
 	if cfg.FsyncMode != DefaultFsyncMode {
 		t.Errorf("FsyncMode = %q, want %q", cfg.FsyncMode, DefaultFsyncMode)
 	}
@@ -52,6 +55,7 @@ func TestParseOverrides(t *testing.T) {
 		"-log-format", "json",
 		"-shutdown-timeout", "2s",
 		"-dedupe-cap", "128",
+		"-recv-window", "32",
 		"-fsync", "batched",
 		"-fsync-interval", "10ms",
 	}
@@ -83,6 +87,9 @@ func TestParseOverrides(t *testing.T) {
 	if cfg.DedupeCap != 128 {
 		t.Errorf("DedupeCap = %d", cfg.DedupeCap)
 	}
+	if cfg.RecvWindow != 32 {
+		t.Errorf("RecvWindow = %d", cfg.RecvWindow)
+	}
 }
 
 func TestParseValidation(t *testing.T) {
@@ -99,6 +106,8 @@ func TestParseValidation(t *testing.T) {
 		{"negative shutdown timeout", []string{"-shutdown-timeout", "-1s"}, "shutdown-timeout"},
 		{"zero dedupe cap", []string{"-dedupe-cap", "0"}, "dedupe-cap"},
 		{"negative dedupe cap", []string{"-dedupe-cap", "-1"}, "dedupe-cap"},
+		{"zero recv window", []string{"-recv-window", "0"}, "recv-window"},
+		{"negative recv window", []string{"-recv-window", "-1"}, "recv-window"},
 		{"bad fsync mode", []string{"-fsync", "sometimes"}, "fsync"},
 		{"batched zero interval", []string{"-fsync", "batched", "-fsync-interval", "0"}, "fsync-interval"},
 		{"batched negative interval", []string{"-fsync", "batched", "-fsync-interval", "-1ms"}, "fsync-interval"},
