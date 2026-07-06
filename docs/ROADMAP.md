@@ -168,14 +168,25 @@ Branch convention: `feat/<milestone-slug>`.
 - **Exit:** bench gains `-partitions N` (keyless publishes round-robin to
   spread load); `toymqctl create` / `pub -routing-key` / `sub <topic>#*`.
 
-## v2 M5 — Reader backpressure + flow control
-**Branch:** `feat/flow-control`
-- Per-subscriber receive window (`PAUSE` / `RESUME` lines added to the
-  wire — additive).
-- Broker stops delivering past the window; redelivery ticker honours it.
-- **Owned risk test:** slow-consumer scenario — a consumer sleeping
-  100ms between ACKs must not let inflight grow unbounded; assert
-  bounded memory under a fast producer.
+## v2 M5 — Reader backpressure + flow control ✅ *(shipped — [PR #12](https://github.com/prajwalmahajan101/toymq/pull/12))*
+**Branch:** `feat/flow-control` · **ADR:** [0022](./adr/0022-reader-flow-control.md)
+- **Per-`(partition, consumer)` receive window** (`--recv-window`, default 256):
+  `runDelivery` gates on `awaitCredit` **before** reading the next WAL record,
+  so `len(inflight) ≤ W` always holds — the memory bound. `Ack` frees a slot via
+  a coalescing wake channel (ctx-cancellable, unlike `sync.Cond`). A `SUB #*`
+  across N partitions is bounded by **N×W**.
+- **`PAUSE` / `RESUME`** added to the wire — additive, argument-less,
+  session-scoped verbs suspending/resuming delivery for the whole subscription
+  regardless of the window. The redelivery ticker honours the paused flag;
+  redelivery/Nack re-push already-counted inflight and bypass the window gate.
+  Ephemeral per-connection; `pkg/client` gains `Pause`/`Resume`.
+- **Owned risk test (shipped):** `TestReceiveWindowBoundsInflight` — a fast
+  producer floods the log while a slow consumer receives exactly `W`, delivery
+  stalls, and acking one releases exactly one more (inflight bounded regardless
+  of backlog). Plus `TestPauseHaltsAndResumeReleases` (deterministic PAUSE via
+  window=1) and a real-binary `--recv-window 2` smoke.
+- **Wire:** additive (new `PAUSE`/`RESUME` + `--recv-window`); PUB/SUB/ACK/NACK
+  and default behaviour unchanged.
 - **Exit:** memory ceiling proven under the slow-consumer scenario.
 
 ## v2 M6 — Retention + DLQ + delayed messages
@@ -225,7 +236,7 @@ Branch convention: `feat/<milestone-slug>`.
 | v2 M2 | Batched-fsync mode | ✅ | [#7](https://github.com/prajwalmahajan101/toymq/pull/7) | — |
 | v2 M3 | HELLO + AUTH + TLS | ✅ | [#9](https://github.com/prajwalmahajan101/toymq/pull/9) | — |
 | v2 M4 | Partitions (single-node) | ✅ | [#11](https://github.com/prajwalmahajan101/toymq/pull/11) | — |
-| v2 M5 | Reader backpressure | ⬜ | — | — |
+| v2 M5 | Reader backpressure | ✅ | [#12](https://github.com/prajwalmahajan101/toymq/pull/12) | — |
 | v2 M6 | Retention + DLQ + delay | ⬜ | — | — |
 | v2 M7 | traceparent + alerts | ⬜ | — | — |
 | v2 M8 | Integration matrix + release | ⬜ | — | `v2.0.0` |
