@@ -52,11 +52,23 @@ type CreateCommand struct {
 	Partitions int
 }
 
+// PauseCommand and ResumeCommand are the argument-less flow-control frames
+// (ADR 0022). They are session-scoped: they suspend / resume delivery for
+// the connection's current subscription (every partition of a SUB #*),
+// independent of the automatic receive window. Members of the sealed
+// Command union (ADR 0004).
+type PauseCommand struct{}
+
+// ResumeCommand lifts a prior PAUSE for the connection's subscription.
+type ResumeCommand struct{}
+
 func (PubCommand) isCommand()    {}
 func (SubCommand) isCommand()    {}
 func (AckCommand) isCommand()    {}
 func (NackCommand) isCommand()   {}
 func (CreateCommand) isCommand() {}
+func (PauseCommand) isCommand()  {}
+func (ResumeCommand) isCommand() {}
 
 // Hello is the parsed HELLO handshake frame. It is deliberately NOT a
 // member of the Command union: HELLO is a one-shot handshake phase that
