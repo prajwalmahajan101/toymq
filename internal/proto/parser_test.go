@@ -68,6 +68,16 @@ func TestReadCommandHappy(t *testing.T) {
 			input: "CREATE orders PARTITIONS 4\n",
 			want:  CreateCommand{Topic: "orders", Partitions: 4},
 		},
+		{
+			name:  "PAUSE",
+			input: "PAUSE\n",
+			want:  PauseCommand{},
+		},
+		{
+			name:  "RESUME",
+			input: "RESUME\n",
+			want:  ResumeCommand{},
+		},
 	}
 
 	for _, tc := range cases {
@@ -112,6 +122,8 @@ func TestReadCommandErrors(t *testing.T) {
 		{"SUB extra arg", "SUB t c1 extra\n", ErrInvalidCommand},
 		{"CREATE missing keyword", "CREATE orders 4\n", ErrInvalidCommand},
 		{"CREATE bad count", "CREATE orders PARTITIONS 0\n", ErrInvalidCommand},
+		{"PAUSE extra arg", "PAUSE now\n", ErrInvalidCommand},
+		{"RESUME extra arg", "RESUME now\n", ErrInvalidCommand},
 	}
 
 	for _, tc := range cases {

@@ -42,6 +42,12 @@ func ParseCommandLine(line string, br *bufio.Reader, maxPayload int) (Command, e
 
 	case "CREATE":
 		return parseCreate(fields)
+
+	case "PAUSE":
+		return parsePause(fields)
+
+	case "RESUME":
+		return parseResume(fields)
 	default:
 		return nil, fmt.Errorf("%w: Unknown verb %q", ErrInvalidCommand, fields[0])
 	}
@@ -229,6 +235,23 @@ func parseNack(fields []string) (Command, error) {
 		return nil, fmt.Errorf("%w: NACK msg_id: %w", ErrInvalidCommand, err)
 	}
 	return NackCommand{ConsumerID: fields[1], Partition: partition, MsgID: id}, nil
+}
+
+// parsePause / parseResume accept the bare verb only (ADR 0022): the
+// frame carries no arguments because it is scoped to the connection's
+// current subscription, not a specific topic/partition/consumer.
+func parsePause(fields []string) (Command, error) {
+	if len(fields) != 1 {
+		return nil, fmt.Errorf("%w: PAUSE takes no arguments, got %d", ErrInvalidCommand, len(fields)-1)
+	}
+	return PauseCommand{}, nil
+}
+
+func parseResume(fields []string) (Command, error) {
+	if len(fields) != 1 {
+		return nil, fmt.Errorf("%w: RESUME takes no arguments, got %d", ErrInvalidCommand, len(fields)-1)
+	}
+	return ResumeCommand{}, nil
 }
 
 func parseCreate(fields []string) (Command, error) {
