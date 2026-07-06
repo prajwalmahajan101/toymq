@@ -147,6 +147,20 @@ func (c *testClient) nackP(t *testing.T, consumerID string, partition int, id ui
 	}
 }
 
+// pause / resume send the argument-less flow-control frames (ADR 0022).
+func (c *testClient) pause(t *testing.T)  { c.controlVerb(t, "PAUSE") }
+func (c *testClient) resume(t *testing.T) { c.controlVerb(t, "RESUME") }
+
+func (c *testClient) controlVerb(t *testing.T, verb string) {
+	t.Helper()
+	if _, err := fmt.Fprintf(c.w, "%s\n", verb); err != nil {
+		t.Fatalf("write %s: %v", verb, err)
+	}
+	if err := c.w.Flush(); err != nil {
+		t.Fatalf("flush %s: %v", verb, err)
+	}
+}
+
 // ---- reads ------------------------------------------------------------------
 
 // readLine reads a single line with the default deadline. MSG frames
