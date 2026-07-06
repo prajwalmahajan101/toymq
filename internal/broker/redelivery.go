@@ -69,7 +69,11 @@ func (b *Broker) collectExpired(c *Consumer, now time.Time) []redeliverTask {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.sub == nil || len(c.inflight) == 0 {
+	// A PAUSEd consumer suppresses redelivery too, not just first delivery
+	// (ADR 0022) — otherwise the visibility-timeout sweep would keep pushing
+	// MSGs the client explicitly asked to stop. Timers still advance on
+	// RESUME because DeliveredAt is unchanged here.
+	if c.sub == nil || c.paused || len(c.inflight) == 0 {
 		return nil
 	}
 

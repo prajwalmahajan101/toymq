@@ -210,7 +210,33 @@ func (s *Session) handleCommand(ctx context.Context, cmd proto.Command) {
 		s.handleSub(ctx, c)
 	case proto.CreateCommand:
 		s.handleCreate(c)
+	case proto.PauseCommand:
+		s.handlePauseResume(true)
+	case proto.ResumeCommand:
+		s.handlePauseResume(false)
 	}
+}
+
+// handlePauseResume applies a PAUSE (paused=true) or RESUME to every
+// partition of the connection's current subscription (ADR 0022). Without a
+// prior SUB there is nothing to gate, so it is a NO_SUB error.
+func (s *Session) handlePauseResume(paused bool) {
+	if len(s.currentSubs) == 0 {
+		verb := "RESUME"
+		if paused {
+			verb = "PAUSE"
+		}
+		s.sendResp(func(bw *bufio.Writer) error {
+			return proto.WriteErr(bw, "NO_SUB", verb+" requires a prior SUB")
+		})
+		return
+	}
+	for _, sub := range s.currentSubs {
+		sub.SetPaused(paused)
+	}
+	s.sendResp(func(bw *bufio.Writer) error {
+		return proto.WriteOK(bw, 0)
+	})
 }
 
 func (s *Session) handlePub(c proto.PubCommand) {
