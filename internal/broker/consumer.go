@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -37,15 +38,71 @@ type Consumer struct {
 	inflight  map[uint64]*Inflight
 	sub       *Subscription
 
+	// Flow control (ADR 0022). window is the max number of inflight
+	// (delivered-but-unacked) messages; the delivery goroutine blocks in
+	// awaitCredit once len(inflight) reaches it. paused is a client-driven
+	// PAUSE/RESUME toggle that halts delivery regardless of the window.
+	// Both are read under mu; wake is a coalescing (buffered-1) signal that
+	// Ack and a RESUME send to re-run the awaitCredit condition.
+	window int
+	paused bool
+	wake   chan struct{}
+
 	persistDirty atomic.Bool
 }
 
-func newConsumer(id string, part *Partition) *Consumer {
+func newConsumer(id string, part *Partition, window int) *Consumer {
 	return &Consumer{
 		ID:        id,
 		part:      part,
 		aboveLast: make(map[uint64]struct{}),
 		inflight:  make(map[uint64]*Inflight),
+		window:    window,
+		wake:      make(chan struct{}, 1),
+	}
+}
+
+// awaitCredit blocks until this consumer may deliver one more message —
+// not paused and fewer than window messages inflight — or ctx is
+// cancelled. Returns false only on cancellation. The buffered-1 wake
+// channel plus the re-check loop closes the gap between the condition
+// test and the blocking receive: a signal that arrives in that window is
+// retained and delivered to the next receive, so no wake-up is missed.
+func (c *Consumer) awaitCredit(ctx context.Context) bool {
+	for {
+		c.mu.Lock()
+		ready := !c.paused && len(c.inflight) < c.window
+		c.mu.Unlock()
+		if ready {
+			return true
+		}
+		select {
+		case <-c.wake:
+			// condition may now hold — loop and re-check.
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
+// signalWake nudges any goroutine blocked in awaitCredit to re-check its
+// condition. Non-blocking and coalescing: a full buffer already means a
+// wake is pending, so dropping this one is safe.
+func (c *Consumer) signalWake() {
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
+}
+
+// setPaused toggles client-driven delivery suppression (PAUSE/RESUME).
+// Resuming signals the delivery goroutine to re-evaluate the gate.
+func (c *Consumer) setPaused(paused bool) {
+	c.mu.Lock()
+	c.paused = paused
+	c.mu.Unlock()
+	if !paused {
+		c.signalWake()
 	}
 }
 
@@ -75,6 +132,9 @@ func (c *Consumer) Ack(msgID uint64) error {
 		c.aboveLast[msgID] = struct{}{}
 	}
 	c.persistDirty.Store(true)
+	// A freed inflight slot may re-open the receive window — wake the
+	// delivery goroutine so it re-checks awaitCredit (ADR 0022).
+	c.signalWake()
 	return nil
 }
 

@@ -21,6 +21,10 @@ const (
 	defaultVisibilityTimeout = 30 * time.Second
 	defaultRedeliverInterval = 1 * time.Second
 	defaultPersistInterval   = 100 * time.Millisecond
+	// defaultRecvWindow mirrors config.DefaultRecvWindow; kept here so the
+	// broker package (and its tests) need not import config. Used by the
+	// constructors that don't take an explicit window (ADR 0022).
+	defaultRecvWindow = 256
 )
 
 // Broker is the in-process facade over the lazy topic registry. It
@@ -35,6 +39,10 @@ type Broker struct {
 	// existing on-disk topic keeps its recovered count; an explicit
 	// CreateTopic overrides. Minimum 1 (ADR 0021).
 	defaultPartitions int
+
+	// recvWindow is the per-consumer receive window applied to every
+	// partition's consumers (ADR 0022, --recv-window). Min 1.
+	recvWindow int
 
 	visibilityTimeout time.Duration
 	redeliverInterval time.Duration
@@ -77,21 +85,13 @@ func New(dataDir string, dedupeCap int) (*Broker, error) {
 	return NewWithTimings(dataDir, dedupeCap, defaultVisibilityTimeout, defaultRedeliverInterval)
 }
 
-// NewWithTimingsPartitions is NewWithTimings plus an explicit
-// default-partition count for auto-created topics (ADR 0021). Used by
-// integration tests that exercise partitioning without going through the
-// CREATE verb.
-func NewWithTimingsPartitions(dataDir string, dedupeCap, defaultPartitions int, visibility, redeliverInterval time.Duration) (*Broker, error) {
-	return newBroker(dataDir, dedupeCap, defaultPartitions, visibility, redeliverInterval, SyncConfig{})
-}
-
 // NewWithObservability is NewWithTimings plus the WAL SyncConfig and
 // optional metrics + tracer wiring. cmd/toymq calls this with the
 // configured fsync mode and non-nil m/tr when --metrics-addr or
 // --otlp-endpoint is set; tests pass a zero SyncConfig and nil m/tr and
 // get the same behaviour as New.
-func NewWithObservability(dataDir string, dedupeCap, defaultPartitions int, visibility, redeliverInterval time.Duration, sc SyncConfig, m *metrics.Metrics, tr trace.Tracer) (*Broker, error) {
-	b, err := newBroker(dataDir, dedupeCap, defaultPartitions, visibility, redeliverInterval, sc)
+func NewWithObservability(dataDir string, dedupeCap, defaultPartitions, recvWindow int, visibility, redeliverInterval time.Duration, sc SyncConfig, m *metrics.Metrics, tr trace.Tracer) (*Broker, error) {
+	b, err := newBroker(dataDir, dedupeCap, defaultPartitions, recvWindow, visibility, redeliverInterval, sc)
 	if err != nil {
 		return nil, err
 	}
@@ -106,16 +106,19 @@ func NewWithObservability(dataDir string, dedupeCap, defaultPartitions int, visi
 // Use this when integration tests need faster redelivery than the 30 s
 // production default.
 func NewWithTimings(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration) (*Broker, error) {
-	return newBroker(dataDir, dedupeCap, 1, visibility, redeliverInterval, SyncConfig{})
+	return newBroker(dataDir, dedupeCap, 1, defaultRecvWindow, visibility, redeliverInterval, SyncConfig{})
 }
 
 // newBroker is the shared constructor: it applies sc to every topic log
 // it recovers, so the configured fsync mode is in effect from the first
 // recovered topic (not just topics created after startup). defaultPartitions
 // (min 1) is the count applied to topics auto-created after startup.
-func newBroker(dataDir string, dedupeCap, defaultPartitions int, visibility, redeliverInterval time.Duration, sc SyncConfig) (*Broker, error) {
+func newBroker(dataDir string, dedupeCap, defaultPartitions, recvWindow int, visibility, redeliverInterval time.Duration, sc SyncConfig) (*Broker, error) {
 	if defaultPartitions < 1 {
 		defaultPartitions = 1
+	}
+	if recvWindow < 1 {
+		recvWindow = defaultRecvWindow
 	}
 	persistCtx, persistCancel := context.WithCancel(context.Background())
 	redeliverCtx, redeliverCancel := context.WithCancel(context.Background())
@@ -124,6 +127,7 @@ func newBroker(dataDir string, dedupeCap, defaultPartitions int, visibility, red
 		dataDir:           dataDir,
 		dedupeCap:         dedupeCap,
 		defaultPartitions: defaultPartitions,
+		recvWindow:        recvWindow,
 		visibilityTimeout: visibility,
 		redeliverInterval: redeliverInterval,
 		sync:              sc,
@@ -326,7 +330,7 @@ func (b *Broker) openPartition(topic string, id int, dir string) (*Partition, er
 	if err != nil {
 		return nil, fmt.Errorf("open wal for topic %q partition %d: %w", topic, id, err)
 	}
-	p := newPartition(topic, id, dir, log, dedupe)
+	p := newPartition(topic, id, dir, log, dedupe, b.recvWindow)
 	if err := p.loadOffsets(); err != nil {
 		_ = log.Close()
 		return nil, fmt.Errorf("load offsets for topic %q partition %d: %w", topic, id, err)
