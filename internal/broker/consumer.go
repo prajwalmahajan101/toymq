@@ -138,27 +138,34 @@ func (c *Consumer) Ack(msgID uint64) error {
 	return nil
 }
 
-// Nack bumps Attempts and pushes a snapshot back onto sendCh for
-// immediate redelivery. A full channel is not retried inline — the
-// redelivery ticker covers that path. Returns an error if msgID is
-// not currently inflight.
-func (c *Consumer) Nack(msgID uint64, sendCh chan<- *Inflight) error {
+// nackOrKill decides the fate of a nacked message under the DLQ policy
+// (ADR 0024). When threshold > 0 and the message has already been
+// delivered at least that many times, it is dead: removed from inflight
+// (a synthetic ack, so it stops redelivering) and returned as killed for
+// the caller to move to the dead-letter topic. Otherwise Attempts is
+// bumped and the snapshot is returned as redeliver. threshold == 0
+// disables the DLQ, so every nack redelivers. Returns an error if msgID
+// is not currently inflight.
+func (c *Consumer) nackOrKill(msgID uint64, threshold int) (redeliver, killed *Inflight, err error) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	inf, ok := c.inflight[msgID]
 	if !ok {
-		c.mu.Unlock()
-		return fmt.Errorf("nack: msg %d not in inflight for consumer %q", msgID, c.ID)
+		return nil, nil, fmt.Errorf("nack: msg %d not in inflight for consumer %q", msgID, c.ID)
 	}
+
+	if threshold > 0 && inf.Attempts >= threshold {
+		delete(c.inflight, msgID)
+		dead := *inf
+		c.persistDirty.Store(true)
+		c.signalWake() // freed inflight slot may re-open the window
+		return nil, &dead, nil
+	}
+
 	inf.Attempts++
 	c.persistDirty.Store(true)
 	inf.DeliveredAt = time.Now()
 	snapshot := *inf
-	c.mu.Unlock()
-
-	select {
-	case sendCh <- &snapshot:
-	default:
-		//  channel full - leave for redeliver ticker
-	}
-	return nil
+	return &snapshot, nil, nil
 }

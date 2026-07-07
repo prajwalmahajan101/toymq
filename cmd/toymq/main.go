@@ -85,7 +85,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		RetainDuration: cfg.RetainDuration,
 	}
 
-	b, err := broker.NewWithObservability(cfg.DataDir, cfg.DedupeCap, cfg.DefaultPartitions, cfg.RecvWindow, 30*time.Second, 1*time.Second, syncCfg, retCfg, mtr, tp.Tracer())
+	b, err := broker.NewWithObservability(cfg.DataDir, cfg.DedupeCap, cfg.DefaultPartitions, cfg.RecvWindow, 30*time.Second, 1*time.Second, syncCfg, retCfg, cfg.DLQAfterNacks, mtr, tp.Tracer())
 	if err != nil {
 		return fmt.Errorf("broker: %w", err)
 	}
