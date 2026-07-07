@@ -13,6 +13,39 @@ func seg(index, baseMsgID, bytes, maxTsNs uint64, active bool) wal.SegmentInfo {
 	return wal.SegmentInfo{Index: index, BaseMsgID: baseMsgID, Bytes: bytes, MaxTsNs: maxTsNs, Active: active}
 }
 
+// TestRetentionKeepIndexGuardsUnfiredDelay verifies the delayed-message
+// guard (ADR 0025): a size/age policy that would drop a segment holding
+// an un-fired delayed record is overridden to keep it.
+func TestRetentionKeepIndexGuardsUnfiredDelay(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	old := uint64(now.Add(-time.Hour).UnixNano())
+	future := uint64(now.Add(time.Hour).UnixNano())
+
+	// Four sealed old segments + active. Size budget alone would keep only
+	// the active (drop 0..3). Segment 2 holds an un-fired delayed record.
+	segs := []wal.SegmentInfo{
+		seg(0, 0, 1000, old, false),
+		seg(1, 10, 1000, old, false),
+		{Index: 2, BaseMsgID: 20, Bytes: 1000, MaxTsNs: old, MaxVisibleAtNs: future},
+		seg(3, 30, 1000, old, false),
+		seg(4, 40, 1000, old, true),
+	}
+	// Tiny byte budget → size policy wants keepIndex 4 (drop 0..3), but the
+	// un-fired delay at segment 2 clamps it to 2.
+	keep, drop := retentionKeepIndex(segs, 100, 0, now)
+	if !drop || keep != 2 {
+		t.Fatalf("keep=%d drop=%v, want keep=2 drop=true (un-fired delay guard)", keep, drop)
+	}
+
+	// Once the delayed record has fired (now past its VisibleAtNs), the
+	// guard lifts and size retention drops up to the active segment.
+	later := time.Unix(1_000_000, 0).Add(2 * time.Hour)
+	keep, drop = retentionKeepIndex(segs, 100, 0, later)
+	if !drop || keep != 4 {
+		t.Fatalf("after firing: keep=%d drop=%v, want keep=4 drop=true", keep, drop)
+	}
+}
+
 func TestKeepIndexByBytes(t *testing.T) {
 	// Three 100-byte segments; the last is active.
 	segs := []wal.SegmentInfo{
