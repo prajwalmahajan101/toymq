@@ -61,6 +61,7 @@ func TestParseOverrides(t *testing.T) {
 		"-segment-bytes", "1048576",
 		"-retain-bytes", "8388608",
 		"-retain-duration", "24h",
+		"-dlq-after-nacks", "5",
 	}
 	cfg, err := Parse(args, io.Discard)
 	if err != nil {
@@ -74,6 +75,9 @@ func TestParseOverrides(t *testing.T) {
 	}
 	if cfg.RetainDuration != 24*time.Hour {
 		t.Errorf("RetainDuration = %v, want 24h", cfg.RetainDuration)
+	}
+	if cfg.DLQAfterNacks != 5 {
+		t.Errorf("DLQAfterNacks = %d, want 5", cfg.DLQAfterNacks)
 	}
 	if cfg.FsyncMode != "batched" {
 		t.Errorf("FsyncMode = %q, want batched", cfg.FsyncMode)
@@ -131,6 +135,7 @@ func TestParseValidation(t *testing.T) {
 		{"negative retain-duration", []string{"-retain-duration", "-1s"}, "retain-duration"},
 		{"retain-bytes without segment-bytes", []string{"-retain-bytes", "1024"}, "require -segment-bytes"},
 		{"retain-duration without segment-bytes", []string{"-retain-duration", "1h"}, "require -segment-bytes"},
+		{"negative dlq-after-nacks", []string{"-dlq-after-nacks", "-1"}, "dlq-after-nacks"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -48,6 +48,11 @@ type Config struct {
 	RetainBytes    int64
 	RetainDuration time.Duration
 
+	// DLQAfterNacks moves a message to <topic>.dlq once it has failed this
+	// many delivery attempts (nacks or visibility timeouts). 0 disables the
+	// dead-letter queue (ADR 0024).
+	DLQAfterNacks int
+
 	// Handshake / auth / TLS (ADR 0020). RequireHello makes the HELLO
 	// frame mandatory (default); AuthTokenFile enables bearer-token
 	// auth; TLSAddr runs a TLS listener alongside the plain Addr using
@@ -115,6 +120,7 @@ func Parse(args []string, stderr io.Writer) (*Config, error) {
 	fs.Int64Var(&cfg.SegmentBytes, "segment-bytes", 0, "WAL segment size cap in bytes; 0 keeps a single unbounded segment (disables retention)")
 	fs.Int64Var(&cfg.RetainBytes, "retain-bytes", 0, "max retained WAL bytes per partition; 0 = unbounded (requires -segment-bytes)")
 	fs.DurationVar(&cfg.RetainDuration, "retain-duration", 0, "drop WAL segments whose newest record is older than this, per partition; 0 = unbounded (requires -segment-bytes)")
+	fs.IntVar(&cfg.DLQAfterNacks, "dlq-after-nacks", 0, "move a message to <topic>.dlq after this many failed deliveries; 0 disables the dead-letter queue")
 	fs.BoolVar(&cfg.RequireHello, "require-hello", DefaultRequireHello, "require the HELLO handshake as the first frame (false = plaintext migration window)")
 	fs.StringVar(&cfg.AuthTokenFile, "auth-token-file", "", "file of bearer tokens (one per line) enabling AUTH; empty disables auth")
 	fs.StringVar(&cfg.TLSAddr, "tls-addr", "", "TLS listen address, run alongside -addr; empty disables TLS")
@@ -177,6 +183,9 @@ func (c *Config) validate() error {
 	}
 	if (c.RetainBytes > 0 || c.RetainDuration > 0) && c.SegmentBytes <= 0 {
 		return errors.New("retain-bytes/retain-duration require -segment-bytes > 0")
+	}
+	if c.DLQAfterNacks < 0 {
+		return fmt.Errorf("dlq-after-nacks %d: must be >= 0", c.DLQAfterNacks)
 	}
 	if c.TraceSampleRatio < 0 || c.TraceSampleRatio > 1 {
 		return fmt.Errorf("trace-sample-ratio %v: must be in [0,1]", c.TraceSampleRatio)
