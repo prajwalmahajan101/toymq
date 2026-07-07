@@ -39,6 +39,15 @@ type Config struct {
 	FsyncMode     string
 	FsyncInterval time.Duration
 
+	// WAL retention (ADR 0023). SegmentBytes caps one WAL segment; 0
+	// keeps a single unbounded segment and disables retention. RetainBytes
+	// and RetainDuration bound per-partition disk use and both require
+	// SegmentBytes > 0 (there must be sealed segments to reclaim). All
+	// default to 0 (off), preserving pre-M6 behaviour.
+	SegmentBytes   int64
+	RetainBytes    int64
+	RetainDuration time.Duration
+
 	// Handshake / auth / TLS (ADR 0020). RequireHello makes the HELLO
 	// frame mandatory (default); AuthTokenFile enables bearer-token
 	// auth; TLSAddr runs a TLS listener alongside the plain Addr using
@@ -103,6 +112,9 @@ func Parse(args []string, stderr io.Writer) (*Config, error) {
 	fs.IntVar(&cfg.DefaultPartitions, "default-partitions", DefaultDefaultPartitions, "partition count for auto-created topics (>=1)")
 	fs.StringVar(&cfg.FsyncMode, "fsync", DefaultFsyncMode, "WAL durability: per-message|batched|none")
 	fs.DurationVar(&cfg.FsyncInterval, "fsync-interval", DefaultFsyncInterval, "group-commit window for -fsync=batched")
+	fs.Int64Var(&cfg.SegmentBytes, "segment-bytes", 0, "WAL segment size cap in bytes; 0 keeps a single unbounded segment (disables retention)")
+	fs.Int64Var(&cfg.RetainBytes, "retain-bytes", 0, "max retained WAL bytes per partition; 0 = unbounded (requires -segment-bytes)")
+	fs.DurationVar(&cfg.RetainDuration, "retain-duration", 0, "drop WAL segments whose newest record is older than this, per partition; 0 = unbounded (requires -segment-bytes)")
 	fs.BoolVar(&cfg.RequireHello, "require-hello", DefaultRequireHello, "require the HELLO handshake as the first frame (false = plaintext migration window)")
 	fs.StringVar(&cfg.AuthTokenFile, "auth-token-file", "", "file of bearer tokens (one per line) enabling AUTH; empty disables auth")
 	fs.StringVar(&cfg.TLSAddr, "tls-addr", "", "TLS listen address, run alongside -addr; empty disables TLS")
@@ -153,6 +165,18 @@ func (c *Config) validate() error {
 	}
 	if c.FsyncMode == "batched" && c.FsyncInterval <= 0 {
 		return fmt.Errorf("fsync-interval %v: must be > 0 for -fsync=batched", c.FsyncInterval)
+	}
+	if c.SegmentBytes < 0 {
+		return fmt.Errorf("segment-bytes %d: must be >= 0", c.SegmentBytes)
+	}
+	if c.RetainBytes < 0 {
+		return fmt.Errorf("retain-bytes %d: must be >= 0", c.RetainBytes)
+	}
+	if c.RetainDuration < 0 {
+		return fmt.Errorf("retain-duration %v: must be >= 0", c.RetainDuration)
+	}
+	if (c.RetainBytes > 0 || c.RetainDuration > 0) && c.SegmentBytes <= 0 {
+		return errors.New("retain-bytes/retain-duration require -segment-bytes > 0")
 	}
 	if c.TraceSampleRatio < 0 || c.TraceSampleRatio > 1 {
 		return fmt.Errorf("trace-sample-ratio %v: must be in [0,1]", c.TraceSampleRatio)

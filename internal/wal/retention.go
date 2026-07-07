@@ -14,6 +14,17 @@ type SegmentInfo struct {
 	Active    bool   // true for the single writable segment (never dropped)
 }
 
+// RetainedFloor returns the lowest MsgID still readable — the oldest
+// retained segment's baseMsgID. A NewReader below this returns
+// ErrOutOfRange; the broker uses it to distinguish a resuming consumer
+// that lost data (start < floor) from a fresh consumer that should begin
+// at the floor.
+func (l *Log) RetainedFloor() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.segments[0].baseMsgID
+}
+
 // SegmentInfos returns a snapshot of every segment, oldest first. The
 // retention sweeper uses it to compute a drop set from size/age policy;
 // it is a point-in-time copy, safe to inspect without holding any lock.

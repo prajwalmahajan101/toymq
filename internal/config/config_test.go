@@ -58,10 +58,22 @@ func TestParseOverrides(t *testing.T) {
 		"-recv-window", "32",
 		"-fsync", "batched",
 		"-fsync-interval", "10ms",
+		"-segment-bytes", "1048576",
+		"-retain-bytes", "8388608",
+		"-retain-duration", "24h",
 	}
 	cfg, err := Parse(args, io.Discard)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.SegmentBytes != 1048576 {
+		t.Errorf("SegmentBytes = %d, want 1048576", cfg.SegmentBytes)
+	}
+	if cfg.RetainBytes != 8388608 {
+		t.Errorf("RetainBytes = %d, want 8388608", cfg.RetainBytes)
+	}
+	if cfg.RetainDuration != 24*time.Hour {
+		t.Errorf("RetainDuration = %v, want 24h", cfg.RetainDuration)
 	}
 	if cfg.FsyncMode != "batched" {
 		t.Errorf("FsyncMode = %q, want batched", cfg.FsyncMode)
@@ -114,6 +126,11 @@ func TestParseValidation(t *testing.T) {
 		{"cert without key", []string{"-tls-cert", "c.pem"}, "tls-cert and tls-key"},
 		{"key without cert", []string{"-tls-key", "k.pem"}, "tls-cert and tls-key"},
 		{"tls-addr without cert", []string{"-tls-addr", ":6790"}, "tls-addr requires"},
+		{"negative segment-bytes", []string{"-segment-bytes", "-1"}, "segment-bytes"},
+		{"negative retain-bytes", []string{"-retain-bytes", "-1"}, "retain-bytes"},
+		{"negative retain-duration", []string{"-retain-duration", "-1s"}, "retain-duration"},
+		{"retain-bytes without segment-bytes", []string{"-retain-bytes", "1024"}, "require -segment-bytes"},
+		{"retain-duration without segment-bytes", []string{"-retain-duration", "1h"}, "require -segment-bytes"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
