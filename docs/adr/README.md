@@ -35,6 +35,7 @@
 | 0021 | [Single-node partitions](./0021-partitions-single-node.md) | Accepted |
 | 0022 | [Reader backpressure: receive window + PAUSE/RESUME](./0022-reader-flow-control.md) | Accepted |
 | 0023 | [WAL segmentation + retention](./0023-wal-segmentation-retention.md) | Accepted |
+| 0024 | [Dead-letter queue](./0024-dead-letter-queue.md) | Accepted |
 
 Each ADR is a short snapshot of *why* a decision was made, captured at the
 time the decision landed in code. They are not living docs — when a decision
