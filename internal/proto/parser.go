@@ -144,8 +144,24 @@ func readLine(br *bufio.Reader) (string, error) {
 }
 
 func parsePub(br *bufio.Reader, fields []string, maxPayload int) (Command, error) {
-	if len(fields) != 5 {
-		return nil, fmt.Errorf("%w: PUB expects 4 args (topic dedupe-key routing-key payload_len), got %d", ErrInvalidCommand, len(fields)-1)
+	// PUB <topic> <dedupe-key> <routing-key> <payload_len> [DELAY <ms>]
+	// The optional trailing DELAY <ms> token (ADR 0025) holds the message
+	// from delivery; without it the frame is the pre-M6 5-field shape.
+	var delayMs uint64
+	switch len(fields) {
+	case 5:
+		// no delay
+	case 7:
+		if fields[5] != "DELAY" {
+			return nil, fmt.Errorf("%w: PUB 6th token must be DELAY, got %q", ErrInvalidCommand, fields[5])
+		}
+		d, err := strconv.ParseUint(fields[6], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: PUB DELAY ms: %v", ErrInvalidCommand, err)
+		}
+		delayMs = d
+	default:
+		return nil, fmt.Errorf("%w: PUB expects 4 args (topic dedupe-key routing-key payload_len) with optional DELAY <ms>, got %d", ErrInvalidCommand, len(fields)-1)
 	}
 	topic, partition, star, explicit, err := parseTopicPartition(fields[1])
 	if err != nil {
@@ -191,6 +207,7 @@ func parsePub(br *bufio.Reader, fields []string, maxPayload int) (Command, error
 		Partition:    partition,
 		PartitionSet: explicit,
 		Payload:      payload,
+		DelayMs:      delayMs,
 	}, nil
 }
 

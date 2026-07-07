@@ -81,7 +81,7 @@ func rebuildIndexes(dedupe *DedupeIndex, rec wal.Record) {
 // dedupeKey activates dedupe — a second call with the same key returns
 // the original MsgID and duplicate=true without a new WAL write. The
 // context carries any active OTel span; m may be nil.
-func (p *Partition) publishCtx(ctx context.Context, dedupeKey string, payload []byte, m *metrics.Metrics) (msgID uint64, duplicate bool, err error) {
+func (p *Partition) publishCtx(ctx context.Context, dedupeKey string, payload []byte, delayMs uint64, m *metrics.Metrics) (msgID uint64, duplicate bool, err error) {
 	_ = ctx
 	p.pubMu.Lock()
 	defer p.pubMu.Unlock()
@@ -92,10 +92,20 @@ func (p *Partition) publishCtx(ctx context.Context, dedupeKey string, payload []
 		}
 	}
 
+	now := time.Now().UnixNano()
+	// The proposer resolves the delay to an absolute visible-at time here,
+	// so it travels in the record and is Apply-deterministic in v3 — the
+	// same treatment as TsNs (ADR 0025 / ADR 0018). 0 = visible now.
+	var visibleAtNs uint64
+	if delayMs > 0 {
+		visibleAtNs = uint64(now) + delayMs*uint64(time.Millisecond)
+	}
+
 	rec := wal.Record{
-		TsNs:      uint64(time.Now().UnixNano()),
-		DedupeKey: dedupeKey,
-		Payload:   payload,
+		TsNs:        uint64(now),
+		DedupeKey:   dedupeKey,
+		Payload:     payload,
+		VisibleAtNs: visibleAtNs,
 	}
 
 	start := time.Now()
