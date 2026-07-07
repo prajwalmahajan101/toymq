@@ -28,14 +28,16 @@ func segmentName(index uint64) string {
 // Log (Log.written / Log.committed), which the group committer and
 // readers already coordinate through. A segment therefore holds only
 // the per-file facts: where on disk it lives, where in the logical
-// stream it starts, and (for the active segment) its append fd. A
-// sealed segment's f is nil.
+// stream it starts, and its fd. Only the active segment is written to;
+// a sealed segment keeps its fd open (read-only) until the Log closes
+// or retention drops it — see rotate for why closing it early is unsafe
+// against a racing group-commit flush.
 type segment struct {
 	index          uint64   // zero-based segment number; matches the file name
 	path           string   // absolute path to the .log file
 	baseMsgID      uint64   // MsgID of the first record this segment holds
 	baseByteOffset uint64   // logical byte offset where this segment begins
-	f              *os.File // append fd; non-nil only for the active segment
+	f              *os.File // fd: writable while active, retained read-only once sealed
 }
 
 // newActiveSegment opens (creating if absent) the segment file for
@@ -57,9 +59,9 @@ func newActiveSegment(dir string, index, baseMsgID, baseByteOffset uint64) (*seg
 	}, nil
 }
 
-// close releases the segment's append fd if it holds one (the active
-// segment). Sealed segments carry a nil fd, so close is a no-op for
-// them. Safe to call once during Log.Close.
+// close releases the segment's fd. Both active and sealed segments hold
+// an open fd; a segment whose fd was already released (retention) is a
+// no-op. Safe to call once during Log.Close.
 func (s *segment) close() error {
 	if s.f == nil {
 		return nil

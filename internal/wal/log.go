@@ -78,9 +78,11 @@ type Log struct {
 
 	syncMode     SyncMode
 	syncInterval time.Duration
-	syncFn       func() error // seam: defaults to l.f.Sync; overridable in tests
+	syncFn       func() error // fsync of the active segment; repointed on rotation, snapshotted under mu
 	syncCount    atomic.Uint64
 	commitErr    error // set by the committer on fsync failure; read by waiters
+
+	segmentBytes uint64 // soft size cap per segment; 0 disables rotation (single ever-growing segment)
 
 	stopCommit chan struct{}
 	commitDone chan struct{}
@@ -100,6 +102,7 @@ type options struct {
 	recoveryVisitor func(Record)
 	syncMode        SyncMode
 	syncInterval    time.Duration
+	segmentBytes    uint64
 }
 
 // WithRecoveryVisitor registers fn to be invoked once for every valid
@@ -120,6 +123,18 @@ func WithSyncMode(mode SyncMode, interval time.Duration) Option {
 		o.syncMode = mode
 		o.syncInterval = interval
 	}
+}
+
+// WithSegmentBytes sets the soft size cap for a single WAL segment. When
+// the active segment already holds data and appending the next record
+// would carry it past n bytes, Append seals the active segment on the
+// record boundary and rolls to a fresh one (a single record larger than
+// n still lands whole in its own segment — rotation never splits a
+// record). n == 0 disables rotation: the Log keeps one ever-growing
+// segment, exactly as before M6, so callers that omit this are
+// unaffected.
+func WithSegmentBytes(n uint64) Option {
+	return func(o *options) { o.segmentBytes = n }
 }
 
 // Open opens (or creates) the segment file at dir/000000.log, scans
@@ -153,6 +168,7 @@ func Open(dir string, opts ...Option) (*Log, error) {
 		segments:     []*segment{seg},
 		syncMode:     o.syncMode,
 		syncInterval: interval,
+		segmentBytes: o.segmentBytes,
 	}
 	l.syncFn = seg.f.Sync
 	l.cond = sync.NewCond(&l.mu)
@@ -193,6 +209,21 @@ func (l *Log) Append(rec Record) (msgID uint64, byteOffset uint64, err error) {
 		l.mu.Unlock()
 		return 0, 0, err
 	}
+
+	// Roll to a fresh segment on the record boundary if writing this
+	// record would carry the active segment past its size cap. Only when
+	// the active segment already holds at least one record, so a lone
+	// oversized record still lands whole in its own segment.
+	if l.segmentBytes > 0 {
+		localSize := l.written - l.active().baseByteOffset
+		if localSize > 0 && localSize+uint64(buf.Len()) > l.segmentBytes {
+			if err := l.rotate(); err != nil {
+				l.mu.Unlock()
+				return 0, 0, err
+			}
+		}
+	}
+
 	if _, err := l.active().f.Write(buf.Bytes()); err != nil {
 		l.mu.Unlock()
 		return 0, 0, err
@@ -237,6 +268,42 @@ func (l *Log) Append(rec Record) (msgID uint64, byteOffset uint64, err error) {
 	}
 }
 
+// rotate seals the active segment and appends a fresh one that starts
+// at the current logical byte offset and next MsgID. The caller must
+// hold l.mu, and rec.MsgID for the record about to be written must
+// already be l.nextMsgID (so the new segment's baseMsgID equals its
+// first record's MsgID).
+//
+// Before sealing, any bytes written to the active segment but not yet
+// fsynced are made durable and committed is advanced, so a sealed
+// segment is always fully durable regardless of SyncMode. The sealed
+// segment intentionally keeps its append fd open (read-only from here
+// on) until Log.Close or retention drops it: a concurrent group-commit
+// flush may have snapshotted the old segment's Sync, and closing the fd
+// out from under it would turn a harmless stray fsync into a spurious
+// durability failure. Open fds are bounded by the number of retained
+// segments, which retention (T5) keeps small.
+func (l *Log) rotate() error {
+	old := l.active()
+
+	if l.written > l.committed.Load() {
+		if err := old.f.Sync(); err != nil {
+			return err
+		}
+		l.syncCount.Add(1)
+		l.committed.Store(l.written)
+		l.cond.Broadcast()
+	}
+
+	seg, err := newActiveSegment(l.dir, old.index+1, l.nextMsgID, l.written)
+	if err != nil {
+		return err
+	}
+	l.segments = append(l.segments, seg)
+	l.syncFn = seg.f.Sync
+	return nil
+}
+
 // runCommitter is the SyncBatched group-commit loop: every syncInterval
 // (and once more on stop) it fsyncs any bytes written since the last
 // commit and advances committed, releasing all appenders waiting on
@@ -259,21 +326,28 @@ func (l *Log) runCommitter() {
 }
 
 // flush fsyncs the bytes written so far and advances committed. It
-// snapshots the write offset under mu, fsyncs OUTSIDE the lock so
-// concurrent Appends can proceed during the fsync, then re-takes mu to
-// publish the new committed offset. The snapshot is always on a record
-// boundary (Append updates written only after a full record write), so
-// committed never lands mid-record.
+// snapshots the write offset AND the active segment's Sync under mu,
+// fsyncs OUTSIDE the lock so concurrent Appends can proceed during the
+// fsync, then re-takes mu to publish the new committed offset. The
+// snapshot is always on a record boundary (Append updates written only
+// after a full record write), so committed never lands mid-record.
+//
+// syncFn is snapshotted under the lock because rotation repoints it;
+// the snapshotted Sync is always safe to call because a sealed
+// segment's fd stays open (see rotate). If a rotation raced this cycle,
+// committed will already have advanced past snap and the publish below
+// becomes a no-op — the next tick fsyncs the new active segment.
 func (l *Log) flush() {
 	l.mu.Lock()
 	snap := l.written
+	syncFn := l.syncFn
 	if snap <= l.committed.Load() || l.commitErr != nil {
 		l.mu.Unlock()
 		return
 	}
 	l.mu.Unlock()
 
-	syncErr := l.syncFn()
+	syncErr := syncFn()
 
 	l.mu.Lock()
 	if syncErr != nil {
