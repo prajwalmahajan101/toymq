@@ -177,6 +177,168 @@ func TestSegmentRotationBatchedConcurrent(t *testing.T) {
 	}
 }
 
+// TestMultiSegmentRecovery writes across several segments, reopens, and
+// asserts every record is recovered in MsgID order across the segment
+// boundaries, with nextMsgID and each segment's base fields restored.
+func TestMultiSegmentRecovery(t *testing.T) {
+	dir := t.TempDir()
+
+	fs := frameSize(t, Record{Payload: []byte("0123456789")})
+	capBytes := 2 * fs // two records per segment
+
+	l, err := Open(dir, WithSegmentBytes(capBytes))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	const n = 7
+	for i := range n {
+		if _, _, err := l.Append(Record{Payload: []byte("0123456789")}); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	wantSegments := len(l.segments)
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Reopen and collect recovered records via the visitor.
+	var got []uint64
+	l2, err := Open(dir, WithSegmentBytes(capBytes),
+		WithRecoveryVisitor(func(rec Record) { got = append(got, rec.MsgID) }))
+	if err != nil {
+		t.Fatalf("Reopen: %v", err)
+	}
+	defer l2.Close()
+
+	if len(got) != n {
+		t.Fatalf("recovered %d records, want %d", len(got), n)
+	}
+	for i := range uint64(n) {
+		if got[i] != i {
+			t.Fatalf("recovered MsgID[%d] = %d, want %d (order must hold across segments)", i, got[i], i)
+		}
+	}
+	if l2.nextMsgID != n {
+		t.Errorf("nextMsgID after recovery = %d, want %d", l2.nextMsgID, n)
+	}
+	if len(l2.segments) != wantSegments {
+		t.Fatalf("segment count after recovery = %d, want %d", len(l2.segments), wantSegments)
+	}
+	// Base fields must be reconstructed from the scan: 2 records/segment.
+	for i, seg := range l2.segments {
+		if want := uint64(i) * 2; seg.baseMsgID != want {
+			t.Errorf("segment[%d].baseMsgID = %d, want %d", i, seg.baseMsgID, want)
+		}
+		if want := uint64(i) * capBytes; seg.baseByteOffset != want {
+			t.Errorf("segment[%d].baseByteOffset = %d, want %d", i, seg.baseByteOffset, want)
+		}
+	}
+
+	// A further append continues the MsgID sequence and the byte stream.
+	id, _, err := l2.Append(Record{Payload: []byte("0123456789")})
+	if err != nil {
+		t.Fatalf("Append after recovery: %v", err)
+	}
+	if id != n {
+		t.Errorf("Append after recovery: id=%d, want %d", id, n)
+	}
+}
+
+// TestTornTailTruncatesActiveSegmentOnly corrupts the tail of the active
+// segment after a multi-segment run and asserts recovery truncates only
+// that segment, leaving sealed segments and their records intact.
+func TestTornTailTruncatesActiveSegmentOnly(t *testing.T) {
+	dir := t.TempDir()
+
+	fs := frameSize(t, Record{Payload: []byte("0123456789")})
+	capBytes := 2 * fs
+
+	l, err := Open(dir, WithSegmentBytes(capBytes))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	const n = 5 // → segments {0,1}, {2,3}, {4}: active is 000002.log
+	for i := range n {
+		if _, _, err := l.Append(Record{Payload: []byte("0123456789")}); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	activeIdx := uint64(len(l.segments) - 1)
+	sealedSizeBefore := segFileSize(t, dir, 0)
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Append garbage to the active segment only.
+	af, err := os.OpenFile(filepath.Join(dir, segmentName(activeIdx)), os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open active: %v", err)
+	}
+	if _, err := af.Write([]byte("garbage")); err != nil {
+		t.Fatalf("write garbage: %v", err)
+	}
+	af.Close()
+
+	var got []uint64
+	l2, err := Open(dir, WithSegmentBytes(capBytes),
+		WithRecoveryVisitor(func(rec Record) { got = append(got, rec.MsgID) }))
+	if err != nil {
+		t.Fatalf("Reopen: %v", err)
+	}
+	defer l2.Close()
+
+	// All 5 real records recovered; garbage dropped.
+	if len(got) != n || l2.nextMsgID != n {
+		t.Fatalf("recovered=%v nextMsgID=%d, want %d records", got, l2.nextMsgID, n)
+	}
+	// Sealed segment 0 untouched; active segment truncated back to one record.
+	if after := segFileSize(t, dir, 0); after != sealedSizeBefore {
+		t.Errorf("sealed segment 0 size changed: got %d, want %d", after, sealedSizeBefore)
+	}
+	if got := segFileSize(t, dir, activeIdx); got != int64(fs) {
+		t.Errorf("active segment size after recovery = %d, want %d (garbage truncated)", got, fs)
+	}
+}
+
+// TestCorruptionInSealedSegmentIsFatal proves recovery refuses to
+// silently truncate a sealed segment: a bad frame there is real damage,
+// not an interrupted write, and must surface as an error.
+func TestCorruptionInSealedSegmentIsFatal(t *testing.T) {
+	dir := t.TempDir()
+
+	fs := frameSize(t, Record{Payload: []byte("0123456789")})
+	l, err := Open(dir, WithSegmentBytes(2*fs))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	for i := range 5 { // ensure segment 0 is sealed
+		if _, _, err := l.Append(Record{Payload: []byte("0123456789")}); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	if len(l.segments) < 2 {
+		t.Fatalf("need a sealed segment; got %d", len(l.segments))
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Flip a byte inside sealed segment 0 to break its CRC.
+	p := filepath.Join(dir, segmentName(0))
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	data[len(data)-1] ^= 0xff
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, err := Open(dir, WithSegmentBytes(2*fs)); err == nil {
+		t.Fatal("Open: expected error on sealed-segment corruption, got nil")
+	}
+}
+
 // TestNoRotationWhenDisabled confirms the zero-value cap keeps a single
 // ever-growing segment — the pre-M6 behaviour for callers that omit
 // WithSegmentBytes.

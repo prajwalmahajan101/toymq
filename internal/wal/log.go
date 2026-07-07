@@ -150,12 +150,19 @@ func Open(dir string, opts ...Option) (*Log, error) {
 		return nil, err
 	}
 
-	// PR-1 (T1) keeps a single segment (000000.log); rotation and
-	// multi-segment discovery arrive in T2/T3. baseMsgID and
-	// baseByteOffset are 0 for the first segment.
-	seg, err := newActiveSegment(dir, 0, 0, 0)
+	// Discover existing segments (NNNNNN.log) in ascending order; create
+	// the first (000000.log) if the directory is empty. baseMsgID and
+	// baseByteOffset are filled in by recover as it scans.
+	segments, err := discoverSegments(dir)
 	if err != nil {
 		return nil, err
+	}
+	if len(segments) == 0 {
+		seg, err := openSegment(dir, 0, 0, 0, true)
+		if err != nil {
+			return nil, err
+		}
+		segments = []*segment{seg}
 	}
 
 	interval := o.syncInterval
@@ -165,16 +172,18 @@ func Open(dir string, opts ...Option) (*Log, error) {
 
 	l := &Log{
 		dir:          dir,
-		segments:     []*segment{seg},
+		segments:     segments,
 		syncMode:     o.syncMode,
 		syncInterval: interval,
 		segmentBytes: o.segmentBytes,
 	}
-	l.syncFn = seg.f.Sync
+	l.syncFn = l.active().f.Sync
 	l.cond = sync.NewCond(&l.mu)
 
 	if err := l.recover(o.recoveryVisitor); err != nil {
-		seg.close()
+		for _, seg := range segments {
+			seg.close()
+		}
 		return nil, err
 	}
 	// After recovery, committed == the durable byte length; nothing is
@@ -295,7 +304,7 @@ func (l *Log) rotate() error {
 		l.cond.Broadcast()
 	}
 
-	seg, err := newActiveSegment(l.dir, old.index+1, l.nextMsgID, l.written)
+	seg, err := openSegment(l.dir, old.index+1, l.nextMsgID, l.written, true)
 	if err != nil {
 		return err
 	}
