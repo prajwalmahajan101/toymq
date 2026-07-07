@@ -39,6 +39,7 @@ type segment struct {
 	path           string   // absolute path to the .log file
 	baseMsgID      uint64   // MsgID of the first record this segment holds
 	baseByteOffset uint64   // logical byte offset where this segment begins
+	maxTsNs        uint64   // newest record timestamp in this segment (0 if empty); for age-based retention
 	f              *os.File // fd: writable while active, retained read-only once sealed
 }
 

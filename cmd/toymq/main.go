@@ -79,8 +79,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// FsyncMode was validated in config.Parse, so ParseSyncMode cannot fail here.
 	syncMode, _ := wal.ParseSyncMode(cfg.FsyncMode)
 	syncCfg := broker.SyncConfig{Mode: syncMode, Interval: cfg.FsyncInterval}
+	// Retention config is wired from CLI flags in T6; disabled here.
+	retCfg := broker.RetentionConfig{}
 
-	b, err := broker.NewWithObservability(cfg.DataDir, cfg.DedupeCap, cfg.DefaultPartitions, cfg.RecvWindow, 30*time.Second, 1*time.Second, syncCfg, mtr, tp.Tracer())
+	b, err := broker.NewWithObservability(cfg.DataDir, cfg.DedupeCap, cfg.DefaultPartitions, cfg.RecvWindow, 30*time.Second, 1*time.Second, syncCfg, retCfg, mtr, tp.Tracer())
 	if err != nil {
 		return fmt.Errorf("broker: %w", err)
 	}

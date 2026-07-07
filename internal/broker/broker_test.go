@@ -565,7 +565,7 @@ func TestDedupeRebuildRespectsLRUCap(t *testing.T) {
 // ticker fires quickly.
 func TestBatchedSyncDeliversEndToEnd(t *testing.T) {
 	sc := SyncConfig{Mode: wal.SyncBatched, Interval: 2 * time.Millisecond}
-	b, err := newBroker(t.TempDir(), testDedupeCap, 1, defaultRecvWindow, defaultVisibilityTimeout, 20*time.Millisecond, sc)
+	b, err := newBroker(t.TempDir(), testDedupeCap, 1, defaultRecvWindow, defaultVisibilityTimeout, 20*time.Millisecond, sc, RetentionConfig{})
 	if err != nil {
 		t.Fatalf("newBroker: %v", err)
 	}

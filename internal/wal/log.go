@@ -233,12 +233,16 @@ func (l *Log) Append(rec Record) (msgID uint64, byteOffset uint64, err error) {
 		}
 	}
 
-	if _, err := l.active().f.Write(buf.Bytes()); err != nil {
+	active := l.active()
+	if _, err := active.f.Write(buf.Bytes()); err != nil {
 		l.mu.Unlock()
 		return 0, 0, err
 	}
 	l.nextMsgID++
 	l.written += uint64(buf.Len())
+	if rec.TsNs > active.maxTsNs {
+		active.maxTsNs = rec.TsNs // newest timestamp in the segment, for age-based retention
+	}
 	end := l.written
 
 	switch l.syncMode {
