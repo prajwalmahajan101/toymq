@@ -116,6 +116,45 @@ func discoverSegments(dir string) ([]*segment, error) {
 	return segs, nil
 }
 
+// segmentAfterLocked returns the segment immediately following the one
+// with the given index — the smallest index strictly greater than idx —
+// or nil if none exists yet. Segments are kept sorted ascending, so the
+// first match is the immediate successor. Caller must hold l.mu.
+func (l *Log) segmentAfterLocked(idx uint64) *segment {
+	for _, s := range l.segments {
+		if s.index > idx {
+			return s
+		}
+	}
+	return nil
+}
+
+// readableLenLocked returns how many bytes of seg a reader may consume
+// and whether seg is the active tail. For the active segment the limit
+// is the committed offset (readers never see un-fsynced bytes); for a
+// sealed segment it is the full segment length (next segment's base
+// minus this one's), which is entirely durable. Caller must hold l.mu.
+func (l *Log) readableLenLocked(seg *segment) (limit uint64, isActive bool) {
+	last := l.segments[len(l.segments)-1]
+	if seg.index == last.index {
+		return l.committed.Load() - seg.baseByteOffset, true
+	}
+	if next := l.segmentAfterLocked(seg.index); next != nil {
+		return next.baseByteOffset - seg.baseByteOffset, false
+	}
+	// seg is no longer in the slice (dropped by retention while a reader
+	// held it); fall back to the committed-based length.
+	return l.committed.Load() - seg.baseByteOffset, false
+}
+
+// readableLen is readableLenLocked with its own lock, for callers (e.g.
+// NewReader's forward scan) that do not already hold l.mu.
+func (l *Log) readableLen(seg *segment) (limit uint64, isActive bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.readableLenLocked(seg)
+}
+
 // close releases the segment's fd. Both active and sealed segments hold
 // an open fd; a segment whose fd was already released (retention) is a
 // no-op. Safe to call once during Log.Close.
