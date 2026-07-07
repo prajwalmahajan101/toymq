@@ -190,10 +190,15 @@ Branch convention: `feat/<milestone-slug>`.
 - **Exit:** memory ceiling proven under the slow-consumer scenario.
 
 ## v2 M6 — Retention + DLQ + delayed messages
-**Branch:** `feat/retention-dlq`
-- **Retention:** per-topic `--retain-bytes` / `--retain-duration`;
-  oldest WAL segments dropped past the limit (preserves consumer
-  offsets but they return `OUT_OF_RANGE` on read past the floor).
+**Branch:** `feat/retention-dlq` (stacked PRs) · **ADR:** [0023](./adr/0023-wal-segmentation-retention.md)
+- **PR1 — WAL segmentation + retention** *(landed on `feat/wal-segments`)*:
+  the single WAL file becomes a rolling set of numbered segments
+  (`--segment-bytes`, record-boundary rotation, multi-segment recovery,
+  boundary-spanning reader). A background sweeper drops whole sealed segments
+  past `--retain-bytes` / `--retain-duration` (dropped when **either** bound
+  would evict; active segment never touched). A resuming consumer whose offset
+  fell below the retained floor gets `ERR OUT_OF_RANGE`; a fresh consumer starts
+  at the floor. Segment boundaries are the natural v3/toyraft snapshot reference.
 - **Dead-letter queue:** per-topic `--dlq-after-nacks N`; messages
   exceeding N redeliveries land on `<topic>.dlq`.
 - **Delayed messages:** `PUB <topic> <key> <payload> DELAY <ms>` —
