@@ -21,6 +21,7 @@ const (
 	defaultVisibilityTimeout = 30 * time.Second
 	defaultRedeliverInterval = 1 * time.Second
 	defaultPersistInterval   = 100 * time.Millisecond
+	defaultRetentionInterval = 1 * time.Second
 	// defaultRecvWindow mirrors config.DefaultRecvWindow; kept here so the
 	// broker package (and its tests) need not import config. Used by the
 	// constructors that don't take an explicit window (ADR 0022).
@@ -58,6 +59,14 @@ type Broker struct {
 	redeliverCancel context.CancelFunc
 	redeliverDone   chan struct{}
 
+	// retention bounds per-partition WAL disk use (v2 M6, ADR 0023). The
+	// zero value disables both segmentation and reclaim (pre-M6
+	// behaviour). The sweep loop runs only when reclaim is enabled.
+	retention       RetentionConfig
+	retentionCtx    context.Context
+	retentionCancel context.CancelFunc
+	retentionDone   chan struct{}
+
 	// sync selects the WAL fsync strategy applied to every topic's log
 	// (ADR 0019). Zero value = SyncPerMessage, today's behaviour.
 	sync SyncConfig
@@ -78,6 +87,24 @@ type SyncConfig struct {
 	Interval time.Duration
 }
 
+// RetentionConfig bounds per-partition WAL disk usage (v2 M6, ADR 0023).
+// The zero value disables segmentation and reclaim, keeping the pre-M6
+// single ever-growing segment. Reclaim needs SegmentBytes > 0 to have
+// sealed segments to drop; the sweep loop runs only when RetainBytes or
+// RetainDuration is set.
+type RetentionConfig struct {
+	SegmentBytes   uint64        // WAL segment size cap (wal.WithSegmentBytes); 0 = no rotation
+	RetainBytes    uint64        // keep at most this many bytes per partition; 0 = unbounded
+	RetainDuration time.Duration // drop segments whose newest record is older than this; 0 = unbounded
+	Interval       time.Duration // sweep tick; <=0 falls back to defaultRetentionInterval
+}
+
+// reclaimEnabled reports whether any reclaim policy is active. Rotation
+// alone (SegmentBytes only) does not need the sweep loop.
+func (rc RetentionConfig) reclaimEnabled() bool {
+	return rc.RetainBytes > 0 || rc.RetainDuration > 0
+}
+
 // New opens (or recovers) a Broker rooted at dataDir with per-topic
 // dedupe LRU capacity dedupeCap. Uses production timings (30s
 // visibility, 1s redeliver tick); tests use NewWithTimings.
@@ -90,8 +117,8 @@ func New(dataDir string, dedupeCap int) (*Broker, error) {
 // configured fsync mode and non-nil m/tr when --metrics-addr or
 // --otlp-endpoint is set; tests pass a zero SyncConfig and nil m/tr and
 // get the same behaviour as New.
-func NewWithObservability(dataDir string, dedupeCap, defaultPartitions, recvWindow int, visibility, redeliverInterval time.Duration, sc SyncConfig, m *metrics.Metrics, tr trace.Tracer) (*Broker, error) {
-	b, err := newBroker(dataDir, dedupeCap, defaultPartitions, recvWindow, visibility, redeliverInterval, sc)
+func NewWithObservability(dataDir string, dedupeCap, defaultPartitions, recvWindow int, visibility, redeliverInterval time.Duration, sc SyncConfig, rc RetentionConfig, m *metrics.Metrics, tr trace.Tracer) (*Broker, error) {
+	b, err := newBroker(dataDir, dedupeCap, defaultPartitions, recvWindow, visibility, redeliverInterval, sc, rc)
 	if err != nil {
 		return nil, err
 	}
@@ -106,22 +133,26 @@ func NewWithObservability(dataDir string, dedupeCap, defaultPartitions, recvWind
 // Use this when integration tests need faster redelivery than the 30 s
 // production default.
 func NewWithTimings(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration) (*Broker, error) {
-	return newBroker(dataDir, dedupeCap, 1, defaultRecvWindow, visibility, redeliverInterval, SyncConfig{})
+	return newBroker(dataDir, dedupeCap, 1, defaultRecvWindow, visibility, redeliverInterval, SyncConfig{}, RetentionConfig{})
 }
 
 // newBroker is the shared constructor: it applies sc to every topic log
 // it recovers, so the configured fsync mode is in effect from the first
 // recovered topic (not just topics created after startup). defaultPartitions
 // (min 1) is the count applied to topics auto-created after startup.
-func newBroker(dataDir string, dedupeCap, defaultPartitions, recvWindow int, visibility, redeliverInterval time.Duration, sc SyncConfig) (*Broker, error) {
+func newBroker(dataDir string, dedupeCap, defaultPartitions, recvWindow int, visibility, redeliverInterval time.Duration, sc SyncConfig, rc RetentionConfig) (*Broker, error) {
 	if defaultPartitions < 1 {
 		defaultPartitions = 1
 	}
 	if recvWindow < 1 {
 		recvWindow = defaultRecvWindow
 	}
+	if rc.Interval <= 0 {
+		rc.Interval = defaultRetentionInterval
+	}
 	persistCtx, persistCancel := context.WithCancel(context.Background())
 	redeliverCtx, redeliverCancel := context.WithCancel(context.Background())
+	retentionCtx, retentionCancel := context.WithCancel(context.Background())
 
 	b := &Broker{
 		dataDir:           dataDir,
@@ -130,6 +161,7 @@ func newBroker(dataDir string, dedupeCap, defaultPartitions, recvWindow int, vis
 		recvWindow:        recvWindow,
 		visibilityTimeout: visibility,
 		redeliverInterval: redeliverInterval,
+		retention:         rc,
 		sync:              sc,
 		topics:            make(map[string]*Topic),
 		persistCtx:        persistCtx,
@@ -138,6 +170,9 @@ func newBroker(dataDir string, dedupeCap, defaultPartitions, recvWindow int, vis
 		redeliverCtx:      redeliverCtx,
 		redeliverCancel:   redeliverCancel,
 		redeliverDone:     make(chan struct{}),
+		retentionCtx:      retentionCtx,
+		retentionCancel:   retentionCancel,
+		retentionDone:     make(chan struct{}),
 	}
 
 	topicsDir := filepath.Join(b.dataDir, "topics")
@@ -163,6 +198,7 @@ func newBroker(dataDir string, dedupeCap, defaultPartitions, recvWindow int, vis
 
 	go b.runPersistLoop(100 * time.Millisecond)
 	go b.runRedeliverLoop(b.redeliverInterval)
+	go b.runRetentionLoop()
 
 	slog.Info("broker opened",
 		"data-dir", b.dataDir,
@@ -324,6 +360,7 @@ func (b *Broker) openPartition(topic string, id int, dir string) (*Partition, er
 	dedupe := NewDedupeIndex(b.dedupeCap)
 	log, err := wal.Open(dir,
 		wal.WithSyncMode(b.sync.Mode, b.sync.Interval),
+		wal.WithSegmentBytes(b.retention.SegmentBytes),
 		wal.WithRecoveryVisitor(func(rec wal.Record) {
 			rebuildIndexes(dedupe, rec)
 		}))
@@ -405,6 +442,9 @@ func (b *Broker) PublishCtx(ctx context.Context, topic, dedupeKey, routingKey st
 // any Attempts bumps land in the final flush), then closes every
 // open WAL. Returns the first error encountered.
 func (b *Broker) Close() error {
+	b.retentionCancel()
+	<-b.retentionDone
+
 	b.redeliverCancel()
 	<-b.redeliverDone
 
