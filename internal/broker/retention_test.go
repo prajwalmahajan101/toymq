@@ -111,7 +111,7 @@ func TestSweepPartitionRetentionDropsOldSegments(t *testing.T) {
 		Interval:     time.Hour, // ticker parked; we sweep by hand
 	}
 	b, err := newBroker(t.TempDir(), testDedupeCap, 1, defaultRecvWindow,
-		defaultVisibilityTimeout, defaultRedeliverInterval, SyncConfig{}, rc)
+		defaultVisibilityTimeout, defaultRedeliverInterval, SyncConfig{}, rc, 0)
 	if err != nil {
 		t.Fatalf("newBroker: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestSweepPartitionRetentionDropsOldSegments(t *testing.T) {
 func TestConsumerStartFloorSemantics(t *testing.T) {
 	rc := RetentionConfig{SegmentBytes: 300, RetainBytes: 600, Interval: time.Hour}
 	b, err := newBroker(t.TempDir(), testDedupeCap, 1, defaultRecvWindow,
-		defaultVisibilityTimeout, defaultRedeliverInterval, SyncConfig{}, rc)
+		defaultVisibilityTimeout, defaultRedeliverInterval, SyncConfig{}, rc, 0)
 	if err != nil {
 		t.Fatalf("newBroker: %v", err)
 	}

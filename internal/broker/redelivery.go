@@ -44,7 +44,7 @@ func (b *Broker) sweepRedelivery(now time.Time) {
 			p.consumersMu.RUnlock()
 
 			for _, c := range consumers {
-				tasks := b.collectExpired(c, now)
+				tasks, dead := b.collectExpired(c, now)
 				for _, task := range tasks {
 					slog.Info("redelivering",
 						"topic", t.name,
@@ -60,12 +60,21 @@ func (b *Broker) sweepRedelivery(now time.Time) {
 						// channel full, next tick will retry
 					}
 				}
+				// Messages that exceeded the DLQ threshold on a visibility
+				// timeout were synthetically acked out of inflight by
+				// collectExpired; move each to <topic>.dlq (ADR 0024).
+				for _, inf := range dead {
+					slog.Info("dead-lettering message",
+						"topic", t.name, "partition", p.id, "consumer-id", c.ID,
+						"msg-id", inf.MsgID, "attempts", inf.Attempts, "trigger", "timeout")
+					_ = b.dlqMove(t.name, inf.Payload)
+				}
 			}
 		}
 	}
 }
 
-func (b *Broker) collectExpired(c *Consumer, now time.Time) []redeliverTask {
+func (b *Broker) collectExpired(c *Consumer, now time.Time) (tasks []redeliverTask, dead []*Inflight) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -74,15 +83,25 @@ func (b *Broker) collectExpired(c *Consumer, now time.Time) []redeliverTask {
 	// MSGs the client explicitly asked to stop. Timers still advance on
 	// RESUME because DeliveredAt is unchanged here.
 	if c.sub == nil || c.paused || len(c.inflight) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	sendCh := c.sub.sendCh
 	deadline := b.visibilityTimeout
+	threshold := b.dlqThreshold(c.part.topic)
 
-	var tasks []redeliverTask
 	for _, inf := range c.inflight {
 		if !inf.DeliveredAt.Add(deadline).Before(now) {
+			continue
+		}
+		// A timeout is a failed delivery: once the message has been
+		// delivered threshold times it is dead-lettered instead of
+		// redelivered (ADR 0024). Synthetically ack it out of inflight;
+		// the caller appends it to <topic>.dlq after releasing the lock.
+		if threshold > 0 && inf.Attempts >= threshold {
+			delete(c.inflight, inf.MsgID)
+			deadCopy := *inf
+			dead = append(dead, &deadCopy)
 			continue
 		}
 		inf.Attempts++
@@ -90,5 +109,9 @@ func (b *Broker) collectExpired(c *Consumer, now time.Time) []redeliverTask {
 		snapshot := *inf
 		tasks = append(tasks, redeliverTask{sendCh: sendCh, inf: &snapshot})
 	}
-	return tasks
+	if len(dead) > 0 {
+		c.persistDirty.Store(true)
+		c.signalWake() // freed inflight slots may re-open the window
+	}
+	return tasks, dead
 }
