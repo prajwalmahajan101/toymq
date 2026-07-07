@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 )
 
 // segmentExt is the on-disk suffix for every WAL segment file. Segments
@@ -40,13 +42,19 @@ type segment struct {
 	f              *os.File // fd: writable while active, retained read-only once sealed
 }
 
-// newActiveSegment opens (creating if absent) the segment file for
-// append and returns a segment ready to be written to. baseMsgID and
-// baseByteOffset place it in the logical stream — both zero for the
-// very first segment (000000.log).
-func newActiveSegment(dir string, index, baseMsgID, baseByteOffset uint64) (*segment, error) {
+// openSegment opens the segment file at the given index and returns a
+// segment. The active segment is opened O_RDWR|O_CREATE|O_APPEND (it is
+// the append target and the only one recovery may truncate); a sealed
+// segment is opened read-only. baseMsgID and baseByteOffset place it in
+// the logical stream — both zero for the very first segment, and filled
+// in by recovery for segments discovered on Open.
+func openSegment(dir string, index, baseMsgID, baseByteOffset uint64, active bool) (*segment, error) {
 	path := filepath.Join(dir, segmentName(index))
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+	flags := os.O_RDONLY
+	if active {
+		flags = os.O_RDWR | os.O_CREATE | os.O_APPEND
+	}
+	f, err := os.OpenFile(path, flags, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -57,6 +65,55 @@ func newActiveSegment(dir string, index, baseMsgID, baseByteOffset uint64) (*seg
 		baseByteOffset: baseByteOffset,
 		f:              f,
 	}, nil
+}
+
+// discoverSegments lists dir for segment files (NNNNNN.log), opens them
+// in ascending index order, and returns them with the last marked
+// active. Indices need not start at 0 or be contiguous — retention may
+// have dropped a prefix. Returns nil (no error) when dir holds no
+// segment files yet, so Open can create the first one. baseMsgID and
+// baseByteOffset are left zero here; recovery fills them by scanning.
+func discoverSegments(dir string) ([]*segment, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var indices []uint64
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, segmentExt) {
+			continue
+		}
+		var idx uint64
+		if _, err := fmt.Sscanf(name, "%06d"+segmentExt, &idx); err != nil {
+			continue
+		}
+		// Sscanf is lenient (e.g. accepts "1.log"); require the exact
+		// zero-padded canonical name so only real segment files match.
+		if segmentName(idx) != name {
+			continue
+		}
+		indices = append(indices, idx)
+	}
+	if len(indices) == 0 {
+		return nil, nil
+	}
+	slices.Sort(indices)
+
+	segs := make([]*segment, len(indices))
+	for i, idx := range indices {
+		active := i == len(indices)-1
+		seg, err := openSegment(dir, idx, 0, 0, active)
+		if err != nil {
+			for _, s := range segs[:i] {
+				s.close()
+			}
+			return nil, err
+		}
+		segs[i] = seg
+	}
+	return segs, nil
 }
 
 // close releases the segment's fd. Both active and sealed segments hold
