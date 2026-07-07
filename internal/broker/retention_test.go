@@ -202,7 +202,7 @@ func TestConsumerStartFloorSemantics(t *testing.T) {
 	below := p.getOrCreateConsumer("below")
 	below.mu.Lock()
 	below.hasAcked = true
-	below.lastAcked = floor - 2 // next = floor-1 < floor
+	below.lastAcked = floor - 2 // resumes just below the retained floor
 	below.mu.Unlock()
 	if _, oor := p.consumerStartID(below); !oor {
 		t.Fatal("resuming below floor: want outOfRange=true")
