@@ -21,7 +21,10 @@ type Reader struct {
 // first record with MsgID >= fromMsgID, and returns a Reader
 // positioned there. Callers must Close the Reader.
 func (l *Log) NewReader(fromMsgID uint64) (*Reader, error) {
-	f, err := os.Open(l.path)
+	// PR-1 (T1): a Log still holds exactly one segment, so the reader
+	// opens the active segment's file. T4 generalises NewReader to
+	// locate the start segment by MsgID range and span boundaries.
+	f, err := os.Open(l.active().path)
 	if err != nil {
 		return nil, err
 	}

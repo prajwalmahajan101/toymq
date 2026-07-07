@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,11 +68,11 @@ var ErrSyncFailed = errors.New("wal: group-commit fsync failed")
 // after fsync, so consumers never see un-fsynced data). See ADRs 0001,
 // 0002, 0019.
 type Log struct {
-	path      string
-	f         *os.File
+	dir       string
+	segments  []*segment // ordered by baseMsgID; last element is the active (writable) one
 	mu        sync.Mutex
 	nextMsgID uint64
-	written   uint64 // bytes written to f; may exceed committed pre-fsync (batched)
+	written   uint64 // logical bytes written; may exceed committed pre-fsync (batched)
 	committed atomic.Uint64
 	cond      *sync.Cond
 
@@ -86,6 +85,12 @@ type Log struct {
 	stopCommit chan struct{}
 	commitDone chan struct{}
 	stopOnce   sync.Once
+}
+
+// active returns the current writable segment — always the last in the
+// ordered slice. A Log always has at least one segment after Open.
+func (l *Log) active() *segment {
+	return l.segments[len(l.segments)-1]
 }
 
 // Option configures Open.
@@ -130,9 +135,10 @@ func Open(dir string, opts ...Option) (*Log, error) {
 		return nil, err
 	}
 
-	path := filepath.Join(dir, "000000.log")
-
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+	// PR-1 (T1) keeps a single segment (000000.log); rotation and
+	// multi-segment discovery arrive in T2/T3. baseMsgID and
+	// baseByteOffset are 0 for the first segment.
+	seg, err := newActiveSegment(dir, 0, 0, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -143,16 +149,16 @@ func Open(dir string, opts ...Option) (*Log, error) {
 	}
 
 	l := &Log{
-		path:         path,
-		f:            f,
+		dir:          dir,
+		segments:     []*segment{seg},
 		syncMode:     o.syncMode,
 		syncInterval: interval,
 	}
-	l.syncFn = l.f.Sync
+	l.syncFn = seg.f.Sync
 	l.cond = sync.NewCond(&l.mu)
 
 	if err := l.recover(o.recoveryVisitor); err != nil {
-		f.Close()
+		seg.close()
 		return nil, err
 	}
 	// After recovery, committed == the durable byte length; nothing is
@@ -187,7 +193,7 @@ func (l *Log) Append(rec Record) (msgID uint64, byteOffset uint64, err error) {
 		l.mu.Unlock()
 		return 0, 0, err
 	}
-	if _, err := l.f.Write(buf.Bytes()); err != nil {
+	if _, err := l.active().f.Write(buf.Bytes()); err != nil {
 		l.mu.Unlock()
 		return 0, 0, err
 	}
@@ -284,10 +290,11 @@ func (l *Log) flush() {
 	l.mu.Unlock()
 }
 
-// Close releases the segment file. For SyncBatched it first stops the
+// Close releases the segment files. For SyncBatched it first stops the
 // group committer, whose final flush makes any pending appends durable
-// and releases their waiters, before the fd is closed. Safe to call
-// once; further Appends after Close fail at the os.File layer.
+// and releases their waiters, before the fds are closed. Safe to call
+// once; further Appends after Close fail at the os.File layer. Only the
+// active segment holds an open fd; sealed segments close as no-ops.
 func (l *Log) Close() error {
 	if l.syncMode == SyncBatched {
 		l.stopOnce.Do(func() { close(l.stopCommit) })
@@ -295,5 +302,11 @@ func (l *Log) Close() error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.f.Close()
+	var firstErr error
+	for _, seg := range l.segments {
+		if err := seg.close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
