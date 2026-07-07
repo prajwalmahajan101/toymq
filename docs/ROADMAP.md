@@ -190,7 +190,7 @@ Branch convention: `feat/<milestone-slug>`.
 - **Exit:** memory ceiling proven under the slow-consumer scenario.
 
 ## v2 M6 — Retention + DLQ + delayed messages
-**Branch:** `feat/retention-dlq` (stacked PRs) · **ADR:** [0023](./adr/0023-wal-segmentation-retention.md)
+**Branch:** `feat/retention-dlq` (stacked PRs) · **ADRs:** [0023](./adr/0023-wal-segmentation-retention.md), [0024](./adr/0024-dead-letter-queue.md), [0025](./adr/0025-delayed-messages.md)
 - **PR1 — WAL segmentation + retention** *(landed on `feat/wal-segments`)*:
   the single WAL file becomes a rolling set of numbered segments
   (`--segment-bytes`, record-boundary rotation, multi-segment recovery,
@@ -205,11 +205,17 @@ Branch convention: `feat/<milestone-slug>`.
   auto-created `<topic>.dlq` (1 partition) via the deterministic `dlqMove` seam.
   `.dlq` topics are loop-guarded; the attempt count is in-memory/best-effort in
   v2. In v3 the leader proposes the move.
-- **Delayed messages:** `PUB <topic> <key> <payload> DELAY <ms>` —
-  message held until the timer fires; persisted across restart.
-- **Owned risk test:** time-travel — drive the clock forward in
-  integration tests; verify retention drops, DLQ moves, and delayed
-  releases all fire deterministically.
+- **PR3 — Delayed messages** *(landed on `feat/delayed-msgs`)* · **ADR:** [0025](./adr/0025-delayed-messages.md):
+  `PUB … DELAY <ms>` stamps an append-only `VisibleAtNs` on the record at propose
+  time; the delivery goroutine parks until it fires, preserving per-partition
+  order (head-of-line by design). Persisted across restart for free (it is in the
+  WAL); retention will not drop a segment holding an un-fired delayed record.
+  `pkg/client.PubDelay` / `toymqctl pub --delay-ms`.
+- **Owned risk test:** integration `m6_test.go` — retention drops old segments
+  and reads below the floor return `OUT_OF_RANGE`; a message past
+  `--dlq-after-nacks` lands on `<topic>.dlq` and stops redelivering; a `DELAY`
+  message fires only after its visible-at; retention keeps an un-fired delayed
+  record's segment.
 - **Exit:** three real production patterns (log retention, DLQ, scheduled
   jobs) usable end-to-end.
 

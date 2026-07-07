@@ -12,6 +12,13 @@ import (
 // selects the partition by hash when non-empty; empty round-robins. To pin
 // a partition explicitly, pass topic as "<topic>#<n>" (ADR 0021).
 func (c *Client) Pub(ctx context.Context, topic, dedupeKey, routingKey string, payload []byte) (msgID uint64, dup bool, err error) {
+	return c.PubDelay(ctx, topic, dedupeKey, routingKey, payload, 0)
+}
+
+// PubDelay is Pub with a delivery delay: the broker holds the message
+// from delivery for delayMs milliseconds, then delivers it in normal
+// per-partition order (ADR 0025). delayMs == 0 is identical to Pub.
+func (c *Client) PubDelay(ctx context.Context, topic, dedupeKey, routingKey string, payload []byte, delayMs uint64) (msgID uint64, dup bool, err error) {
 	if c.isClosed() {
 		return 0, false, ErrClosed
 	}
@@ -25,6 +32,12 @@ func (c *Client) Pub(ctx context.Context, topic, dedupeKey, routingKey string, p
 		rkey = "-"
 	}
 
+	header := fmt.Sprintf("PUB %s %s %s %d", topic, key, rkey, len(payload))
+	if delayMs > 0 {
+		header += fmt.Sprintf(" DELAY %d", delayMs)
+	}
+	header += "\n"
+
 	p := c.pending.push()
 
 	c.writeMu.Lock()
@@ -33,7 +46,7 @@ func (c *Client) Pub(ctx context.Context, topic, dedupeKey, routingKey string, p
 		c.pending.cancel(p)
 		return 0, false, ErrClosed
 	}
-	if _, werr := fmt.Fprintf(c.w, "PUB %s %s %s %d\n", topic, key, rkey, len(payload)); werr != nil {
+	if _, werr := c.w.WriteString(header); werr != nil {
 		c.writeMu.Unlock()
 		c.pending.cancel(p)
 		return 0, false, fmt.Errorf("%w: write PUB header: %w", ErrTransport, werr)
