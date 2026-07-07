@@ -87,7 +87,11 @@ func TestSecondSubscribeDetachesFirst(t *testing.T) {
 // Scenario 7: two consumers with distinct IDs on the same topic. Each
 // receives every published message (fan-out, not load-balancing).
 func TestFanOutAcrossConsumerIDs(t *testing.T) {
-	h := startBroker(t)
+	// A long visibility timeout so the redelivery sweep cannot fire while
+	// the test reads its two deliveries: otherwise m1 can be redelivered
+	// before m2's first delivery is read, and the msgID-keyed map collapses
+	// the pair to a single entry (flaky under -race on slower runners).
+	h := startBroker(t, withVisibility(10*time.Second))
 
 	a := dial(t, h.addr)
 	a.sub(t, "orders", "consumer-A")
