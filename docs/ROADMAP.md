@@ -199,8 +199,12 @@ Branch convention: `feat/<milestone-slug>`.
   would evict; active segment never touched). A resuming consumer whose offset
   fell below the retained floor gets `ERR OUT_OF_RANGE`; a fresh consumer starts
   at the floor. Segment boundaries are the natural v3/toyraft snapshot reference.
-- **Dead-letter queue:** per-topic `--dlq-after-nacks N`; messages
-  exceeding N redeliveries land on `<topic>.dlq`.
+- **PR2 — Dead-letter queue** *(landed on `feat/dlq`)* · **ADR:** [0024](./adr/0024-dead-letter-queue.md):
+  `--dlq-after-nacks N`; a message that fails delivery N times (nack or
+  visibility timeout) is synthetically acked and its payload republished onto the
+  auto-created `<topic>.dlq` (1 partition) via the deterministic `dlqMove` seam.
+  `.dlq` topics are loop-guarded; the attempt count is in-memory/best-effort in
+  v2. In v3 the leader proposes the move.
 - **Delayed messages:** `PUB <topic> <key> <payload> DELAY <ms>` —
   message held until the timer fires; persisted across restart.
 - **Owned risk test:** time-travel — drive the clock forward in
