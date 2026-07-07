@@ -409,14 +409,15 @@ func (b *Broker) TopicPartitions(topic string) (int, error) {
 // non-empty dedupeKey activates per-partition dedupe. Equivalent to
 // PublishCtx(context.Background(), ...).
 func (b *Broker) Publish(topic, dedupeKey, routingKey string, partition int, partitionSet bool, payload []byte) (uint64, int, bool, error) {
-	return b.PublishCtx(context.Background(), topic, dedupeKey, routingKey, partition, partitionSet, payload)
+	return b.PublishCtx(context.Background(), topic, dedupeKey, routingKey, partition, partitionSet, payload, 0)
 }
 
-// PublishCtx is Publish with a context that carries the OTel span.
-// The broker creates a "broker.publish" span when a tracer is wired;
-// otherwise the span is a no-op and ctx is only used as the cancel
-// boundary for future tracing additions.
-func (b *Broker) PublishCtx(ctx context.Context, topic, dedupeKey, routingKey string, partition int, partitionSet bool, payload []byte) (uint64, int, bool, error) {
+// PublishCtx is Publish with a context that carries the OTel span and an
+// optional delivery delay (ADR 0025): delayMs > 0 stamps the record's
+// VisibleAtNs to now+delay so delivery holds it until then. The broker
+// creates a "broker.publish" span when a tracer is wired; otherwise the
+// span is a no-op and ctx is only used as the cancel boundary.
+func (b *Broker) PublishCtx(ctx context.Context, topic, dedupeKey, routingKey string, partition int, partitionSet bool, payload []byte, delayMs uint64) (uint64, int, bool, error) {
 	ctx, span := b.startSpan(ctx, "broker.publish",
 		tracing.AttrTopic.String(topic),
 		tracing.AttrPayloadBytes.Int(len(payload)),
@@ -431,7 +432,7 @@ func (b *Broker) PublishCtx(ctx context.Context, topic, dedupeKey, routingKey st
 	if err != nil {
 		return 0, 0, false, err
 	}
-	id, dup, err := p.publishCtx(ctx, dedupeKey, payload, b.metrics)
+	id, dup, err := p.publishCtx(ctx, dedupeKey, payload, delayMs, b.metrics)
 	if err == nil {
 		span.SetAttributes(tracing.AttrDuplicate.Bool(dup))
 		if dup {

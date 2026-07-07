@@ -240,7 +240,7 @@ func (s *Session) handlePauseResume(paused bool) {
 }
 
 func (s *Session) handlePub(c proto.PubCommand) {
-	id, _, dup, err := s.broker.Publish(c.Topic, c.DedupeKey, c.RoutingKey, c.Partition, c.PartitionSet, c.Payload)
+	id, _, dup, err := s.broker.PublishCtx(context.Background(), c.Topic, c.DedupeKey, c.RoutingKey, c.Partition, c.PartitionSet, c.Payload, c.DelayMs)
 	if err != nil {
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {

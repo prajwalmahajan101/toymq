@@ -18,6 +18,11 @@ type PubCommand struct {
 	Partition    int
 	PartitionSet bool
 	Payload      []byte
+
+	// DelayMs holds the optional trailing DELAY <ms> token: the message is
+	// held from delivery for this many milliseconds (ADR 0025). 0 (the
+	// default, token absent) delivers immediately.
+	DelayMs uint64
 }
 
 // SubCommand is a parsed SUB frame. AllPartitions is set by SUB <topic>
