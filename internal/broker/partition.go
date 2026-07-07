@@ -166,6 +166,27 @@ func (p *Partition) consumerStartID(c *Consumer) (startID uint64, outOfRange boo
 	return start, false
 }
 
+// awaitVisible blocks until the wall-clock reaches visibleAtNs (a
+// delayed message's release time) or ctx is cancelled. Returns true when
+// the message is now visible, false if ctx cancelled first. The wait is
+// on the local delivery side only (ADR 0025): the release time is
+// already fixed in the record, so this timer never affects Apply
+// determinism in v3.
+func awaitVisible(ctx context.Context, visibleAtNs uint64) bool {
+	now := uint64(time.Now().UnixNano())
+	if visibleAtNs <= now {
+		return true
+	}
+	timer := time.NewTimer(time.Duration(visibleAtNs - now))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 func (p *Partition) runDelivery(ctx context.Context, c *Consumer, sub *Subscription, sendCh chan<- *Inflight, m *metrics.Metrics) {
 	defer close(sub.done)
 	defer m.DecSubs()
@@ -196,6 +217,17 @@ func (p *Partition) runDelivery(ctx context.Context, c *Consumer, sub *Subscript
 
 		rec, err := reader.Next(ctx)
 		if err != nil {
+			return
+		}
+
+		// Delayed messages (ADR 0025): a record with a future VisibleAtNs
+		// parks the delivery goroutine until that instant. Because delivery
+		// is a single in-order goroutine per (partition, consumer), the
+		// delayed record holds this partition's delivery until it fires —
+		// head-of-line by design (use a dedicated partition for delayed
+		// traffic if that is unwanted). The record is not yet inflight, so
+		// no receive-window slot is held while parked.
+		if rec.VisibleAtNs > 0 && !awaitVisible(ctx, rec.VisibleAtNs) {
 			return
 		}
 
