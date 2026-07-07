@@ -131,19 +131,42 @@ func (p *Partition) getOrCreateConsumer(id string) *Consumer {
 	return c
 }
 
+// consumerStartID resolves where delivery for c should begin, applying
+// the retention floor (ADR 0023). A fresh consumer (never acked) starts
+// at the floor — the earliest still-retained record — so a
+// retention-trimmed partition stays subscribable. A resuming consumer
+// whose next offset (lastAcked+1) has fallen below the floor lost
+// un-consumed data: outOfRange is true and the caller must refuse
+// delivery (the SUB path reports OUT_OF_RANGE). Any start at or above
+// the floor is delivered normally.
+func (p *Partition) consumerStartID(c *Consumer) (startID uint64, outOfRange bool) {
+	c.mu.Lock()
+	hasAcked := c.hasAcked
+	lastAcked := c.lastAcked
+	c.mu.Unlock()
+
+	floor := p.log.RetainedFloor()
+	if !hasAcked {
+		return floor, false
+	}
+	start := lastAcked + 1
+	if start < floor {
+		return 0, true
+	}
+	return start, false
+}
+
 func (p *Partition) runDelivery(ctx context.Context, c *Consumer, sub *Subscription, sendCh chan<- *Inflight, m *metrics.Metrics) {
 	defer close(sub.done)
 	defer m.DecSubs()
 
-	c.mu.Lock()
-	var startID uint64
-	if c.hasAcked {
-		startID = c.lastAcked + 1
+	startID, outOfRange := p.consumerStartID(c)
+	if outOfRange {
+		// Resuming consumer whose durable offset fell below the retained
+		// floor. The SUB pre-check (SubStartCheck) already told the client
+		// OUT_OF_RANGE; just don't start delivering.
+		return
 	}
-	// fresh consumer (never acked) starts at MsgID 0 regardless of
-	// any prior aboveLast entries — those came from out-of-order
-	// acks above lastAcked and don't shift the start point.
-	c.mu.Unlock()
 
 	reader, err := p.log.NewReader(startID)
 	if err != nil {
@@ -221,12 +244,7 @@ func (p *Partition) subscribe(ctx context.Context, consumerID string, sendCh cha
 		<-prev.done
 	}
 
-	c.mu.Lock()
-	var startID uint64
-	if c.hasAcked {
-		startID = c.lastAcked + 1
-	}
-	c.mu.Unlock()
+	startID, _ := p.consumerStartID(c)
 	slog.Info("consumer subscribed",
 		"topic", p.topic,
 		"partition", p.id,

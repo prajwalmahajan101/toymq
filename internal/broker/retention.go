@@ -1,11 +1,43 @@
 package broker
 
 import (
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/wal"
 )
+
+// ErrSubOutOfRange reports that a resuming consumer's next offset has
+// fallen below its partition's retained floor — retention dropped data
+// it had not yet consumed. The server maps it to wire ERR OUT_OF_RANGE
+// (ADR 0023). A fresh consumer is never out of range; it starts at the
+// floor.
+var ErrSubOutOfRange = errors.New("subscribe: start offset below retained floor")
+
+// SubStartCheck reports whether a SUB for consumerID would begin below
+// the retained floor on any selected partition (a resuming consumer that
+// lost un-consumed data). It is a synchronous pre-check the session runs
+// before acknowledging SUB, so it can answer OUT_OF_RANGE instead of OK
+// without racing the async delivery goroutines. Returns ErrSubOutOfRange
+// on violation, a topic/selector error, or nil to proceed.
+func (b *Broker) SubStartCheck(topic string, partition int, all bool, consumerID string) error {
+	t, err := b.getOrCreateTopic(topic)
+	if err != nil {
+		return err
+	}
+	parts, err := t.selectPartitions(partition, all)
+	if err != nil {
+		return err
+	}
+	for _, p := range parts {
+		c := p.getOrCreateConsumer(consumerID)
+		if _, outOfRange := p.consumerStartID(c); outOfRange {
+			return ErrSubOutOfRange
+		}
+	}
+	return nil
+}
 
 // runRetentionLoop is the background WAL-reclaim sweeper — a peer of
 // runRedeliverLoop. It ticks every retention.Interval and, per

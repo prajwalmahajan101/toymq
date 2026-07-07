@@ -339,6 +339,21 @@ func (s *Session) handleSub(ctx context.Context, c proto.SubCommand) {
 		})
 		return
 	}
+	// Refuse a resuming consumer whose durable offset fell below the
+	// retained floor (retention dropped its un-consumed data) with
+	// OUT_OF_RANGE, before the OK — a fresh consumer instead starts at the
+	// floor (ADR 0023). Checked synchronously so the error frame precedes
+	// any delivery the SUB would trigger.
+	if err := s.broker.SubStartCheck(c.Topic, c.Partition, c.AllPartitions, c.ConsumerID); err != nil {
+		code, reason := "SUB_FAILED", err.Error()
+		if errors.Is(err, broker.ErrSubOutOfRange) {
+			code = "OUT_OF_RANGE"
+		}
+		s.sendResp(func(bw *bufio.Writer) error {
+			return proto.WriteErr(bw, code, reason)
+		})
+		return
+	}
 	s.sendResp(func(bw *bufio.Writer) error {
 		return proto.WriteOK(bw, 0)
 	})

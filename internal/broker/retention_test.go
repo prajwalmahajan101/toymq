@@ -2,6 +2,7 @@ package broker
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 	"time"
 
@@ -158,4 +159,68 @@ func TestSweepPartitionRetentionDropsOldSegments(t *testing.T) {
 		t.Fatalf("NewReader(floor): %v", err)
 	}
 	r.Close()
+}
+
+// TestConsumerStartFloorSemantics verifies the fresh-vs-resuming rule
+// (ADR 0023): a fresh consumer starts at the floor; a resuming consumer
+// whose next offset fell below the floor is OUT_OF_RANGE; one at/above
+// the floor proceeds.
+func TestConsumerStartFloorSemantics(t *testing.T) {
+	rc := RetentionConfig{SegmentBytes: 300, RetainBytes: 600, Interval: time.Hour}
+	b, err := newBroker(t.TempDir(), testDedupeCap, 1, defaultRecvWindow,
+		defaultVisibilityTimeout, defaultRedeliverInterval, SyncConfig{}, rc)
+	if err != nil {
+		t.Fatalf("newBroker: %v", err)
+	}
+	t.Cleanup(func() { b.Close() })
+
+	const topic = "orders"
+	payload := bytes.Repeat([]byte("x"), 80)
+	for range 30 {
+		if _, _, _, err := b.Publish(topic, "", "", 0, false, payload); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+	}
+	b.sweepRetention(time.Now())
+
+	p := b.topics[topic].partitions[0]
+	floor := p.log.RetainedFloor()
+	if floor == 0 {
+		t.Fatal("floor should have advanced")
+	}
+
+	// Fresh consumer → starts at the floor, never out of range.
+	fresh := p.getOrCreateConsumer("fresh")
+	if start, oor := p.consumerStartID(fresh); oor || start != floor {
+		t.Fatalf("fresh consumer: start=%d oor=%v, want start=%d oor=false", start, oor, floor)
+	}
+	if err := b.SubStartCheck(topic, 0, false, "fresh"); err != nil {
+		t.Fatalf("SubStartCheck(fresh): %v, want nil", err)
+	}
+
+	// Resuming consumer with next offset below the floor → OUT_OF_RANGE.
+	below := p.getOrCreateConsumer("below")
+	below.mu.Lock()
+	below.hasAcked = true
+	below.lastAcked = floor - 2 // next = floor-1 < floor
+	below.mu.Unlock()
+	if _, oor := p.consumerStartID(below); !oor {
+		t.Fatal("resuming below floor: want outOfRange=true")
+	}
+	if err := b.SubStartCheck(topic, 0, false, "below"); !errors.Is(err, ErrSubOutOfRange) {
+		t.Fatalf("SubStartCheck(below): %v, want ErrSubOutOfRange", err)
+	}
+
+	// Resuming consumer at/above the floor → proceeds from lastAcked+1.
+	above := p.getOrCreateConsumer("above")
+	above.mu.Lock()
+	above.hasAcked = true
+	above.lastAcked = floor + 3
+	above.mu.Unlock()
+	if start, oor := p.consumerStartID(above); oor || start != floor+4 {
+		t.Fatalf("resuming above floor: start=%d oor=%v, want start=%d oor=false", start, oor, floor+4)
+	}
+	if err := b.SubStartCheck(topic, 0, false, "above"); err != nil {
+		t.Fatalf("SubStartCheck(above): %v, want nil", err)
+	}
 }
