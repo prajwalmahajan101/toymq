@@ -113,7 +113,7 @@ func buildHarness(t *testing.T, opts harnessOpts) *harness {
 	if window < 1 {
 		window = defaultRecvWindow
 	}
-	b, err := broker.NewWithObservability(opts.dataDir, opts.dedupeCap, parts, window, opts.visibility, opts.redeliverInterval, broker.SyncConfig{}, broker.RetentionConfig{}, nil, nil)
+	b, err := broker.NewWithObservability(opts.dataDir, opts.dedupeCap, parts, window, opts.visibility, opts.redeliverInterval, broker.SyncConfig{}, broker.RetentionConfig{}, 0, nil, nil)
 	if err != nil {
 		t.Fatalf("broker.NewWithObservability: %v", err)
 	}

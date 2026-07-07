@@ -67,6 +67,10 @@ type Broker struct {
 	retentionCancel context.CancelFunc
 	retentionDone   chan struct{}
 
+	// dlqAfterNacks moves a message to <topic>.dlq once it has failed this
+	// many delivery attempts (v2 M6, ADR 0024). 0 disables the DLQ.
+	dlqAfterNacks int
+
 	// sync selects the WAL fsync strategy applied to every topic's log
 	// (ADR 0019). Zero value = SyncPerMessage, today's behaviour.
 	sync SyncConfig
@@ -117,8 +121,8 @@ func New(dataDir string, dedupeCap int) (*Broker, error) {
 // configured fsync mode and non-nil m/tr when --metrics-addr or
 // --otlp-endpoint is set; tests pass a zero SyncConfig and nil m/tr and
 // get the same behaviour as New.
-func NewWithObservability(dataDir string, dedupeCap, defaultPartitions, recvWindow int, visibility, redeliverInterval time.Duration, sc SyncConfig, rc RetentionConfig, m *metrics.Metrics, tr trace.Tracer) (*Broker, error) {
-	b, err := newBroker(dataDir, dedupeCap, defaultPartitions, recvWindow, visibility, redeliverInterval, sc, rc)
+func NewWithObservability(dataDir string, dedupeCap, defaultPartitions, recvWindow int, visibility, redeliverInterval time.Duration, sc SyncConfig, rc RetentionConfig, dlqAfterNacks int, m *metrics.Metrics, tr trace.Tracer) (*Broker, error) {
+	b, err := newBroker(dataDir, dedupeCap, defaultPartitions, recvWindow, visibility, redeliverInterval, sc, rc, dlqAfterNacks)
 	if err != nil {
 		return nil, err
 	}
@@ -133,14 +137,14 @@ func NewWithObservability(dataDir string, dedupeCap, defaultPartitions, recvWind
 // Use this when integration tests need faster redelivery than the 30 s
 // production default.
 func NewWithTimings(dataDir string, dedupeCap int, visibility, redeliverInterval time.Duration) (*Broker, error) {
-	return newBroker(dataDir, dedupeCap, 1, defaultRecvWindow, visibility, redeliverInterval, SyncConfig{}, RetentionConfig{})
+	return newBroker(dataDir, dedupeCap, 1, defaultRecvWindow, visibility, redeliverInterval, SyncConfig{}, RetentionConfig{}, 0)
 }
 
 // newBroker is the shared constructor: it applies sc to every topic log
 // it recovers, so the configured fsync mode is in effect from the first
 // recovered topic (not just topics created after startup). defaultPartitions
 // (min 1) is the count applied to topics auto-created after startup.
-func newBroker(dataDir string, dedupeCap, defaultPartitions, recvWindow int, visibility, redeliverInterval time.Duration, sc SyncConfig, rc RetentionConfig) (*Broker, error) {
+func newBroker(dataDir string, dedupeCap, defaultPartitions, recvWindow int, visibility, redeliverInterval time.Duration, sc SyncConfig, rc RetentionConfig, dlqAfterNacks int) (*Broker, error) {
 	if defaultPartitions < 1 {
 		defaultPartitions = 1
 	}
@@ -162,6 +166,7 @@ func newBroker(dataDir string, dedupeCap, defaultPartitions, recvWindow int, vis
 		visibilityTimeout: visibility,
 		redeliverInterval: redeliverInterval,
 		retention:         rc,
+		dlqAfterNacks:     dlqAfterNacks,
 		sync:              sc,
 		topics:            make(map[string]*Topic),
 		persistCtx:        persistCtx,
@@ -553,8 +558,24 @@ func (b *Broker) Nack(topic string, partition int, consumerID string, msgID uint
 		return err
 	}
 	c := p.getOrCreateConsumer(consumerID)
-	if err := c.Nack(msgID, sendCh); err != nil {
+	redeliver, killed, err := c.nackOrKill(msgID, b.dlqThreshold(topic))
+	if err != nil {
 		return err
+	}
+	if killed != nil {
+		slog.Info("dead-lettering message",
+			"topic", topic, "partition", partition, "consumer-id", consumerID,
+			"msg-id", msgID, "attempts", killed.Attempts, "trigger", "nack")
+		// Best-effort move (ADR 0024): the message was synthetically acked
+		// out of the source inflight; a failed append to <topic>.dlq is
+		// logged inside dlqMove, not surfaced to the client's NACK.
+		_ = b.dlqMove(topic, killed.Payload)
+	} else {
+		select {
+		case sendCh <- redeliver:
+		default:
+			// channel full — the redelivery ticker covers this path.
+		}
 	}
 	c.mu.Lock()
 	n := len(c.inflight)
