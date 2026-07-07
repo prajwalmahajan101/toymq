@@ -39,6 +39,16 @@ func TestReadCommandHappy(t *testing.T) {
 			want:  PubCommand{Topic: "orders", DedupeKey: "", Payload: []byte{}},
 		},
 		{
+			name:  "PUB with DELAY",
+			input: "PUB orders - - 5 DELAY 250\nhello\n",
+			want:  PubCommand{Topic: "orders", Payload: []byte("hello"), DelayMs: 250},
+		},
+		{
+			name:  "PUB DELAY zero is immediate",
+			input: "PUB orders k r 5 DELAY 0\nhello\n",
+			want:  PubCommand{Topic: "orders", DedupeKey: "k", RoutingKey: "r", Payload: []byte("hello"), DelayMs: 0},
+		},
+		{
 			name:  "SUB all partitions",
 			input: "SUB orders consumer-1\n",
 			want:  SubCommand{Topic: "orders", AllPartitions: true, ConsumerID: "consumer-1"},
@@ -107,6 +117,9 @@ func TestReadCommandErrors(t *testing.T) {
 		{"PUB short body", "PUB orders - - 10\nhi\n", ErrShortBody},
 		{"PUB no trailing newline", "PUB orders - - 2\nhi", ErrBadFraming},
 		{"PUB star partition", "PUB orders#* - - 5\nhello\n", ErrInvalidCommand},
+		{"PUB 6th token not DELAY", "PUB orders - - 5 WAIT 100\nhello\n", ErrInvalidCommand},
+		{"PUB DELAY non-numeric", "PUB orders - - 5 DELAY soon\nhello\n", ErrInvalidCommand},
+		{"PUB DELAY missing ms", "PUB orders - - 5 DELAY\nhello\n", ErrInvalidCommand},
 		{"PUB bad partition", "PUB orders#x - - 5\nhello\n", ErrInvalidCommand},
 		{"SUB missing arg", "SUB orders\n", ErrInvalidCommand},
 		{"SUB bad partition", "SUB orders#x c1\n", ErrInvalidCommand},
