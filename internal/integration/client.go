@@ -93,6 +93,28 @@ func (c *testClient) pubRouted(t *testing.T, topic, key, routingKey string, payl
 	}
 }
 
+// pubDelay publishes with an optional delivery delay in milliseconds
+// (ADR 0025). delayMs 0 is the same as pub.
+func (c *testClient) pubDelay(t *testing.T, topic string, payload []byte, delayMs uint64) {
+	t.Helper()
+	header := fmt.Sprintf("PUB %s - - %d", topic, len(payload))
+	if delayMs > 0 {
+		header += fmt.Sprintf(" DELAY %d", delayMs)
+	}
+	if _, err := fmt.Fprintf(c.w, "%s\n", header); err != nil {
+		t.Fatalf("write PUB header: %v", err)
+	}
+	if _, err := c.w.Write(payload); err != nil {
+		t.Fatalf("write PUB payload: %v", err)
+	}
+	if err := c.w.WriteByte('\n'); err != nil {
+		t.Fatalf("write PUB trailer: %v", err)
+	}
+	if err := c.w.Flush(); err != nil {
+		t.Fatalf("flush PUB: %v", err)
+	}
+}
+
 // create sends CREATE <topic> PARTITIONS <n>.
 func (c *testClient) create(t *testing.T, topic string, partitions int) {
 	t.Helper()
@@ -250,6 +272,22 @@ func (c *testClient) expectOK(t *testing.T) uint64 {
 		t.Fatalf("parse OK id %q: %v", line, err)
 	}
 	return id
+}
+
+// expectErr reads the next response line and asserts it is an ERR,
+// returning the code and reason. MSG frames are drained first.
+func (c *testClient) expectErr(t *testing.T) (code, reason string) {
+	t.Helper()
+	line := c.readResponseLine(t)
+	if !strings.HasPrefix(line, "ERR ") {
+		t.Fatalf("expected ERR, got %q", line)
+	}
+	fields := strings.SplitN(strings.TrimPrefix(line, "ERR "), " ", 2)
+	code = fields[0]
+	if len(fields) == 2 {
+		reason = fields[1]
+	}
+	return code, reason
 }
 
 func (c *testClient) expectDup(t *testing.T) uint64 {

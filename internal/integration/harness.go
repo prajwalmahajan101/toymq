@@ -36,9 +36,22 @@ type harnessOpts struct {
 	redeliverInterval time.Duration
 	defaultPartitions int
 	dataDir           string
+	retention         broker.RetentionConfig
+	dlqAfterNacks     int
 }
 
 type harnessOpt func(*harnessOpts)
+
+// withRetention enables WAL segmentation + reclaim (v2 M6, ADR 0023).
+func withRetention(rc broker.RetentionConfig) harnessOpt {
+	return func(o *harnessOpts) { o.retention = rc }
+}
+
+// withDLQ arms the dead-letter queue at the given attempt threshold (v2
+// M6, ADR 0024).
+func withDLQ(afterNacks int) harnessOpt {
+	return func(o *harnessOpts) { o.dlqAfterNacks = afterNacks }
+}
 
 func withVisibility(d time.Duration) harnessOpt {
 	return func(o *harnessOpts) { o.visibility = d }
@@ -113,7 +126,7 @@ func buildHarness(t *testing.T, opts harnessOpts) *harness {
 	if window < 1 {
 		window = defaultRecvWindow
 	}
-	b, err := broker.NewWithObservability(opts.dataDir, opts.dedupeCap, parts, window, opts.visibility, opts.redeliverInterval, broker.SyncConfig{}, broker.RetentionConfig{}, 0, nil, nil)
+	b, err := broker.NewWithObservability(opts.dataDir, opts.dedupeCap, parts, window, opts.visibility, opts.redeliverInterval, broker.SyncConfig{}, opts.retention, opts.dlqAfterNacks, nil, nil)
 	if err != nil {
 		t.Fatalf("broker.NewWithObservability: %v", err)
 	}
