@@ -12,7 +12,11 @@ import (
 // valid record in ascending MsgID order (never for the truncated
 // tail), letting callers rebuild in-memory indexes in the same pass.
 func (l *Log) recover(visit func(Record)) error {
-	f, err := os.Open(l.path)
+	// PR-1 (T1): recovery scans the single active segment. T3 generalises
+	// this to scan every segment in ascending order, applying torn-tail
+	// truncation only to the last one.
+	seg := l.active()
+	f, err := os.Open(seg.path)
 	if err != nil {
 		return err
 	}
@@ -33,7 +37,7 @@ func (l *Log) recover(visit func(Record)) error {
 			break
 		}
 		if errors.Is(err, ErrShortRead) || errors.Is(err, ErrBadCRC) || errors.Is(err, ErrTooLarge) {
-			if err := l.f.Truncate(int64(lastGood)); err != nil {
+			if err := seg.f.Truncate(int64(lastGood)); err != nil {
 				return err
 			}
 			break
