@@ -24,13 +24,23 @@ var (
 )
 
 // Record is one durable message: a monotonic MsgID, a producer
-// timestamp, an optional dedupe key, and an opaque payload. The wire
-// format is documented in ADR 0001.
+// timestamp, an optional dedupe key, an opaque payload, and an optional
+// visible-at time for delayed delivery. The wire format is documented in
+// ADR 0001; VisibleAtNs is an append-only trailing field (ADR 0025).
 type Record struct {
 	MsgID     uint64
 	TsNs      uint64
 	DedupeKey string
 	Payload   []byte
+
+	// VisibleAtNs is the wall-clock time (unix ns) before which the
+	// message must not be delivered — set by the producer/proposer to
+	// now+delay for a DELAYed PUB (ADR 0025). 0 means "visible
+	// immediately", so every pre-M6 record and every non-delayed PUB is
+	// unchanged. It is encoded as an append-only 8-byte field after the
+	// payload: records written before M6 carry no trailing bytes and
+	// decode to 0.
+	VisibleAtNs uint64
 }
 
 // Encode writes one framed Record to dst. Returns ErrTooLarge if the
@@ -58,6 +68,12 @@ func Encode(rec Record, dst *bytes.Buffer) error {
 	inner.Write(scratch[:4])
 
 	inner.Write(rec.Payload)
+
+	// Append-only VisibleAtNs (ADR 0025): always written for records
+	// encoded at M6+, so new records carry 8 trailing bytes; pre-M6
+	// records have none and decode to VisibleAtNs == 0.
+	binary.LittleEndian.PutUint64(scratch[:], rec.VisibleAtNs)
+	inner.Write(scratch[:])
 
 	if inner.Len()+4 > MaxRecordSize {
 		return ErrTooLarge
@@ -148,11 +164,24 @@ func Decode(r *bufio.Reader) (Record, int, error) {
 	payloadLen := int(binary.LittleEndian.Uint32(inner[off:]))
 	off += 4
 
-	if off+payloadLen != len(inner) {
+	if off+payloadLen > len(inner) {
 		return Record{}, 0, ErrShortRead
 	}
 
 	rec.Payload = append([]byte(nil), inner[off:off+payloadLen]...)
+	off += payloadLen
+
+	// Append-only VisibleAtNs (ADR 0025): a pre-M6 record ends here (no
+	// trailing bytes → VisibleAtNs 0); an M6+ record carries exactly 8
+	// trailing bytes. Anything else is a malformed frame.
+	switch len(inner) - off {
+	case 0:
+		rec.VisibleAtNs = 0
+	case 8:
+		rec.VisibleAtNs = binary.LittleEndian.Uint64(inner[off:])
+	default:
+		return Record{}, 0, ErrShortRead
+	}
 
 	n := 4 + int(length)
 

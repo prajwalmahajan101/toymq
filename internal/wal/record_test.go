@@ -52,6 +52,64 @@ func TestRoundTripSimple(t *testing.T) {
 	}
 }
 
+func TestRoundTripVisibleAtNs(t *testing.T) {
+	rec := Record{MsgID: 7, TsNs: 100, Payload: []byte("delayed"), VisibleAtNs: 1_700_000_000_000_000_123}
+
+	var buf bytes.Buffer
+	if err := Encode(rec, &buf); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	got, _, err := Decode(bufio.NewReader(&buf))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got.VisibleAtNs != rec.VisibleAtNs {
+		t.Errorf("VisibleAtNs: got %d, want %d", got.VisibleAtNs, rec.VisibleAtNs)
+	}
+	if !bytes.Equal(got.Payload, rec.Payload) {
+		t.Errorf("Payload: got %q, want %q", got.Payload, rec.Payload)
+	}
+}
+
+// TestDecodePreM6RecordNoVisibleAt hand-crafts a record frame in the
+// pre-M6 layout (no trailing VisibleAtNs field) and asserts it decodes
+// with VisibleAtNs == 0 — the append-only back-compat guarantee.
+func TestDecodePreM6RecordNoVisibleAt(t *testing.T) {
+	payload := []byte("legacy")
+	var inner bytes.Buffer
+	var scratch [8]byte
+	binary.LittleEndian.PutUint64(scratch[:], 5) // MsgID
+	inner.Write(scratch[:])
+	binary.LittleEndian.PutUint64(scratch[:], 99) // TsNs
+	inner.Write(scratch[:])
+	binary.LittleEndian.PutUint16(scratch[:2], 0) // no dedupe key
+	inner.Write(scratch[:2])
+	binary.LittleEndian.PutUint32(scratch[:4], uint32(len(payload)))
+	inner.Write(scratch[:4])
+	inner.Write(payload)
+	// Note: no VisibleAtNs appended — this is the pre-M6 frame.
+
+	length := uint32(inner.Len() + 4)
+	crc := crc32.ChecksumIEEE(inner.Bytes())
+	var frame bytes.Buffer
+	binary.LittleEndian.PutUint32(scratch[:4], length)
+	frame.Write(scratch[:4])
+	frame.Write(inner.Bytes())
+	binary.LittleEndian.PutUint32(scratch[:4], crc)
+	frame.Write(scratch[:4])
+
+	got, _, err := Decode(bufio.NewReader(&frame))
+	if err != nil {
+		t.Fatalf("Decode pre-M6 record: %v", err)
+	}
+	if got.VisibleAtNs != 0 {
+		t.Errorf("VisibleAtNs = %d, want 0 for a pre-M6 record", got.VisibleAtNs)
+	}
+	if got.MsgID != 5 || !bytes.Equal(got.Payload, payload) {
+		t.Errorf("decoded MsgID=%d payload=%q, want 5/%q", got.MsgID, got.Payload, payload)
+	}
+}
+
 func TestRoundTripSizes(t *testing.T) {
 	cases := []struct {
 		name      string
