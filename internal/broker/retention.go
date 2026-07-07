@@ -132,8 +132,30 @@ func retentionKeepIndex(segs []wal.SegmentInfo, retainBytes uint64, retainDur ti
 	if keep > activeIdx {
 		keep = activeIdx
 	}
+	// Delayed-message guard (ADR 0025): never drop a segment holding an
+	// un-fired delayed record (VisibleAtNs still in the future), or any
+	// newer one. This LOWERS keep to the oldest such segment, overriding
+	// size/age which would otherwise reclaim it before the message fires.
+	if delayFloor, ok := oldestUnfiredDelaySegment(segs, now); ok && delayFloor < keep {
+		keep = delayFloor
+	}
 	// Drop only if the floor moved past the oldest segment currently held.
 	return keep, keep > segs[0].Index
+}
+
+// oldestUnfiredDelaySegment returns the index of the oldest segment that
+// holds a delayed record whose VisibleAtNs is still in the future
+// (un-fired at now), and whether any such segment exists. Retention must
+// keep that segment and everything newer so the delayed message is still
+// on disk when it fires (ADR 0025).
+func oldestUnfiredDelaySegment(segs []wal.SegmentInfo, now time.Time) (index uint64, ok bool) {
+	nowNs := uint64(now.UnixNano())
+	for _, s := range segs {
+		if s.MaxVisibleAtNs > nowNs {
+			return s.Index, true
+		}
+	}
+	return 0, false
 }
 
 // keepIndexByBytes returns the oldest segment index that keeps the total

@@ -7,11 +7,12 @@ import "os"
 // drop without reaching into wal internals. Slices returned by
 // SegmentInfos are ordered oldest-first.
 type SegmentInfo struct {
-	Index     uint64 // segment number (file name)
-	BaseMsgID uint64 // MsgID of the first record in the segment
-	Bytes     uint64 // readable byte length (committed for active, full for sealed)
-	MaxTsNs   uint64 // newest record timestamp in the segment (0 if empty)
-	Active    bool   // true for the single writable segment (never dropped)
+	Index          uint64 // segment number (file name)
+	BaseMsgID      uint64 // MsgID of the first record in the segment
+	Bytes          uint64 // readable byte length (committed for active, full for sealed)
+	MaxTsNs        uint64 // newest record timestamp in the segment (0 if empty)
+	MaxVisibleAtNs uint64 // highest VisibleAtNs in the segment (0 if none delayed)
+	Active         bool   // true for the single writable segment (never dropped)
 }
 
 // RetainedFloor returns the lowest MsgID still readable — the oldest
@@ -36,11 +37,12 @@ func (l *Log) SegmentInfos() []SegmentInfo {
 	for i, seg := range l.segments {
 		bytes, active := l.readableLenLocked(seg)
 		out[i] = SegmentInfo{
-			Index:     seg.index,
-			BaseMsgID: seg.baseMsgID,
-			Bytes:     bytes,
-			MaxTsNs:   seg.maxTsNs,
-			Active:    active,
+			Index:          seg.index,
+			BaseMsgID:      seg.baseMsgID,
+			Bytes:          bytes,
+			MaxTsNs:        seg.maxTsNs,
+			MaxVisibleAtNs: seg.maxVisibleAtNs,
+			Active:         active,
 		}
 	}
 	return out
