@@ -252,7 +252,7 @@ Branch convention: `feat/<milestone-slug>`.
 | v2 M3 | HELLO + AUTH + TLS | ✅ | [#9](https://github.com/prajwalmahajan101/toymq/pull/9) | — |
 | v2 M4 | Partitions (single-node) | ✅ | [#11](https://github.com/prajwalmahajan101/toymq/pull/11) | — |
 | v2 M5 | Reader backpressure | ✅ | [#12](https://github.com/prajwalmahajan101/toymq/pull/12) | — |
-| v2 M6 | Retention + DLQ + delay | ⬜ | — | — |
+| v2 M6 | Retention + DLQ + delay | ✅ | [#13](https://github.com/prajwalmahajan101/toymq/pull/13), [#16](https://github.com/prajwalmahajan101/toymq/pull/16), [#17](https://github.com/prajwalmahajan101/toymq/pull/17) | — |
 | v2 M7 | traceparent + alerts | ⬜ | — | — |
 | v2 M8 | Integration matrix + release | ⬜ | — | `v2.0.0` |
 
