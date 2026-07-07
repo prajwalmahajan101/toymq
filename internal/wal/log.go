@@ -243,6 +243,9 @@ func (l *Log) Append(rec Record) (msgID uint64, byteOffset uint64, err error) {
 	if rec.TsNs > active.maxTsNs {
 		active.maxTsNs = rec.TsNs // newest timestamp in the segment, for age-based retention
 	}
+	if rec.VisibleAtNs > active.maxVisibleAtNs {
+		active.maxVisibleAtNs = rec.VisibleAtNs // guard retention against dropping un-fired delayed records
+	}
 	end := l.written
 
 	switch l.syncMode {

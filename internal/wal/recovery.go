@@ -99,6 +99,9 @@ func (l *Log) recoverSegment(seg *segment, isActive bool, lastID *uint64, anyRec
 		if rec.TsNs > seg.maxTsNs {
 			seg.maxTsNs = rec.TsNs // rebuild age-based-retention timestamp
 		}
+		if rec.VisibleAtNs > seg.maxVisibleAtNs {
+			seg.maxVisibleAtNs = rec.VisibleAtNs // rebuild delayed-record retention guard
+		}
 		*lastID = rec.MsgID
 		*anyRecord = true
 		if visit != nil {
