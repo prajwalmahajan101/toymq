@@ -150,7 +150,7 @@ ends with `\n`. Bytes between framing are arbitrary.
 |---|---|---|
 | `HELLO` | `HELLO <version> [AUTH <token>]\n` | **First line on every connection** (v2.0). Server replies `HELLO <version> OK\n`. `AUTH` is required when the broker enables tokens. See [Handshake, auth, and TLS](#handshake-auth-and-tls-v20). |
 | `CREATE` | `CREATE <topic> PARTITIONS <n>\n` | Creates `<topic>` with `<n>` partitions (v2 M4). Idempotent for the same count; a different count is an `ERR`. Auto-created topics use `--default-partitions`. |
-| `PUB` | `PUB <topic> <key> <routing-key> <len>\n<payload>\n` | `<key>` is the dedupe key (`-` = none). `<routing-key>` (`-` = none) hashes to a partition (`fnv1a % N`); empty round-robins. `PUB <topic>#<n> …` pins partition `n`. `<len>` is the payload byte length. |
+| `PUB` | `PUB <topic> <key> <routing-key> <len> [DELAY <ms>]\n<payload>\n` | `<key>` is the dedupe key (`-` = none). `<routing-key>` (`-` = none) hashes to a partition (`fnv1a % N`); empty round-robins. `PUB <topic>#<n> …` pins partition `n`. `<len>` is the payload byte length. Optional trailing `DELAY <ms>` holds the message from delivery for `<ms>` milliseconds (v2 M6). |
 | `SUB` | `SUB <topic> <consumer-id>\n` | `<topic>` = all partitions (fan-in); `<topic>#<n>` = one; `<topic>#*` = all. Replays each partition from its `lastAcked + 1`. |
 | `ACK` | `ACK <consumer-id> <partition> <msg-id>\n` | Confirms delivery on `<partition>` (MsgIDs are partition-local); advances that partition's `lastAcked` when the prefix is contiguous. |
 | `NACK` | `NACK <consumer-id> <partition> <msg-id>\n` | Returns the msg to pending; redelivered on the next `runDelivery` iteration. |
@@ -163,7 +163,7 @@ ends with `\n`. Bytes between framing are arbitrary.
 |---|---|---|
 | `OK` | `OK <msg-id>\n` | Success. For PUB the id is freshly assigned; for SUB it is `0` (placeholder); for ACK/NACK it echoes the target id. |
 | `DUP` | `DUP <msg-id>\n` | Dedupe LRU hit; the original assignment for this key is returned. No new WAL write. |
-| `ERR` | `ERR <code> <reason>\n` | Server error. `<code>` is a stable token (`PUB_FAILED`, `NO_SUB`, etc.); `<reason>` is human text. |
+| `ERR` | `ERR <code> <reason>\n` | Server error. `<code>` is a stable token (`PUB_FAILED`, `NO_SUB`, `OUT_OF_RANGE`, etc.); `<reason>` is human text. |
 | `MSG` | `MSG <topic> <partition> <msg-id> <len>\n<payload>\n` | Async push from a subscription. `<partition>` identifies the source partition (echo it back in `ACK`/`NACK`). Order matches `msg-id` within a partition. |
 
 Source of truth: [`internal/proto/parser.go`](./internal/proto/parser.go),
@@ -179,6 +179,26 @@ by N × window. `PAUSE` / `RESUME` add explicit client-driven throttling on top
 (useful when the consumer's own downstream is saturated). See
 [ADR 0022](./docs/adr/0022-reader-flow-control.md); `pkg/client` exposes
 `Pause` / `Resume`.
+
+### Retention, DLQ, and delayed messages (v2 M6)
+
+Three production patterns, all off by default:
+
+- **Retention.** `--segment-bytes` rolls the per-partition WAL into numbered
+  segments; a background sweeper drops whole sealed segments past
+  `--retain-bytes` and/or `--retain-duration` (evicted when **either** bound
+  would). A resuming consumer whose durable offset was reclaimed gets
+  `ERR OUT_OF_RANGE`; a fresh consumer starts at the retained floor.
+  ([ADR 0023](./docs/adr/0023-wal-segmentation-retention.md))
+- **Dead-letter queue.** `--dlq-after-nacks N` moves a message that fails
+  delivery `N` times (nack or visibility timeout) onto the auto-created
+  `<topic>.dlq`; `SUB <topic>.dlq` to inspect it.
+  ([ADR 0024](./docs/adr/0024-dead-letter-queue.md))
+- **Delayed messages.** `PUB … DELAY <ms>` (or `toymqctl pub --delay-ms`,
+  `client.PubDelay`) holds a message from delivery until `now+ms`; the release
+  time is stored in the WAL record so it survives restart. Delivery keeps
+  per-partition order (head-of-line by design).
+  ([ADR 0025](./docs/adr/0025-delayed-messages.md))
 
 ### Handshake, auth, and TLS (v2.0)
 
