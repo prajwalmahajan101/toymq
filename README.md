@@ -5,7 +5,7 @@
 A single-node persistent message broker written in Go as a learning
 project. Stdlib only inside `pkg/client` and the helper CLIs; the
 broker binary opts into Prometheus metrics and OpenTelemetry tracing,
-and the TUI uses Bubble Tea. ~5k lines of code, 15 ADRs documenting
+and the TUI uses Bubble Tea. ~5k lines of code, 27 ADRs documenting
 every non-obvious decision. Not production software.
 
 What it does:
@@ -463,7 +463,7 @@ overview, broker internals, consumers, and traces/correlation.
 
 ## Architecture Decision Records
 
-Seventeen ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
+Twenty-seven ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
 why a non-obvious decision was made at the time it landed in code.
 ADRs are not living docs; if a decision is overturned, a new ADR
 supersedes the old one.
@@ -487,6 +487,16 @@ supersedes the old one.
 | [0015](./docs/adr/0015-observability-stack.md) | Observability stack: Prometheus + OpenTelemetry |
 | [0016](./docs/adr/0016-ci-lint-and-matrix.md) | CI lint + Go version matrix + local hook |
 | [0017](./docs/adr/0017-release-automation.md) | Release automation with GoReleaser |
+| [0018](./docs/adr/0018-dedupe-recovery-from-wal.md) | Dedupe LRU recovery from the WAL |
+| [0019](./docs/adr/0019-batched-fsync-mode.md) | Batched-fsync mode (group commit) |
+| [0020](./docs/adr/0020-hello-auth-tls.md) | HELLO handshake, bearer-token AUTH, and TLS |
+| [0021](./docs/adr/0021-partitions-single-node.md) | Single-node partitions |
+| [0022](./docs/adr/0022-reader-flow-control.md) | Reader backpressure: receive window + PAUSE/RESUME |
+| [0023](./docs/adr/0023-wal-segmentation-retention.md) | WAL segmentation + retention |
+| [0024](./docs/adr/0024-dead-letter-queue.md) | Dead-letter queue |
+| [0025](./docs/adr/0025-delayed-messages.md) | Delayed messages |
+| [0026](./docs/adr/0026-traceparent-wire-propagation.md) | TRACEPARENT wire propagation |
+| [0027](./docs/adr/0027-correlated-telemetry.md) | Correlated telemetry (logs ↔ traces ↔ metrics) |
 
 ---
 

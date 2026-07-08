@@ -219,7 +219,7 @@ Branch convention: `feat/<milestone-slug>`.
 - **Exit:** three real production patterns (log retention, DLQ, scheduled
   jobs) usable end-to-end.
 
-## v2 M7 — Observability hardening: correlation + W3C traceparent ✅ *(shipped — branch `feat/observability-m7`)*
+## v2 M7 — Observability hardening: correlation + W3C traceparent ✅ *(shipped — [PR #19](https://github.com/prajwalmahajan101/toymq/pull/19))*
 **Branch:** `feat/observability-m7` · **ADRs:** [0026](./adr/0026-traceparent-wire-propagation.md), [0027](./adr/0027-correlated-telemetry.md)
 
 Scope grew from the original "traceparent + alerts" into a full **correlated
@@ -253,7 +253,7 @@ telemetry** story, so the milestone split: **M7** owns the code + wire
 - **Exit:** producer→broker traces stitch; logs/metrics/traces share a
   `trace_id`. The alerts + Grafana dashboards that *display* them are M7.5.
 
-## v2 M7.5 — Grafana LGTM stack (provisioned) ✅ *(shipped — branch `feat/observability-stack`)*
+## v2 M7.5 — Grafana LGTM stack (provisioned) ✅ *(shipped — [PR #21](https://github.com/prajwalmahajan101/toymq/pull/21))*
 **Branch:** `feat/observability-stack` (config only, stacked on `feat/observability-m7`)
 - `docker-compose.observability.yml`: `toymq → OTel Collector → { Tempo (traces),
   Prometheus w/ exemplar storage (metrics), Loki (logs via Grafana Alloy) } →
@@ -296,8 +296,8 @@ telemetry** story, so the milestone split: **M7** owns the code + wire
 | v2 M4 | Partitions (single-node) | ✅ | [#11](https://github.com/prajwalmahajan101/toymq/pull/11) | — |
 | v2 M5 | Reader backpressure | ✅ | [#12](https://github.com/prajwalmahajan101/toymq/pull/12) | — |
 | v2 M6 | Retention + DLQ + delay | ✅ | [#13](https://github.com/prajwalmahajan101/toymq/pull/13), [#16](https://github.com/prajwalmahajan101/toymq/pull/16), [#17](https://github.com/prajwalmahajan101/toymq/pull/17) | — |
-| v2 M7 | Observability: correlation + traceparent | ✅ | — (branch `feat/observability-m7`, PR pending) | — |
-| v2 M7.5 | Grafana LGTM stack (provisioned) | ✅ | — (branch `feat/observability-stack`, PR pending) | — |
+| v2 M7 | Observability: correlation + traceparent | ✅ | [#19](https://github.com/prajwalmahajan101/toymq/pull/19) | — |
+| v2 M7.5 | Grafana LGTM stack (provisioned) | ✅ | [#21](https://github.com/prajwalmahajan101/toymq/pull/21) | — |
 | v2 M8 | Integration matrix + release | ⬜ | — | `v2.0.0` |
 
 ---
