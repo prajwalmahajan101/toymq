@@ -16,6 +16,7 @@ import (
 
 	"github.com/prajwalmahajan101/toymq/internal/broker"
 	"github.com/prajwalmahajan101/toymq/internal/config"
+	"github.com/prajwalmahajan101/toymq/internal/logging"
 	"github.com/prajwalmahajan101/toymq/internal/metrics"
 	"github.com/prajwalmahajan101/toymq/internal/server"
 	"github.com/prajwalmahajan101/toymq/internal/tracing"
@@ -218,5 +219,8 @@ func buildLogger(w io.Writer, level, format string) *slog.Logger {
 	default:
 		h = slog.NewTextHandler(w, opts)
 	}
+	// Wrap with the correlation handler so *Context log calls carry
+	// trace_id/span_id when a span is active (ADR 0027). No-op otherwise.
+	h = logging.NewCorrelationHandler(h)
 	return slog.New(h)
 }
