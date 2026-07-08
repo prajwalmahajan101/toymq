@@ -1,0 +1,151 @@
+# Full Grafana LGTM observability stack for ToyMQ (v2 M7.5). Unlike the
+# metrics-only docker-compose.yml, this wires all three signals with
+# correlation (ADR 0026, 0027):
+#
+#   toymq --otlp--> otel-collector --> tempo         (traces)
+#   toymq  /metrics <--scrape-- prometheus           (metrics, exemplars)
+#   toymq  stdout(JSON) <--tail-- alloy --> loki      (logs, trace_id)
+#   grafana ties them together (log <-> trace <-> metric pivots)
+#
+# Run:
+#   docker compose -f docker-compose.observability.yml up -d --build
+#   open http://localhost:3000        # Grafana (anonymous Viewer)
+#   toymqctl pub orders hello ; toymqctl sub orders c1
+#   docker compose -f docker-compose.observability.yml down -v
+#
+# Dev-grade: single-binary Tempo/Loki/Alloy, ephemeral storage, short
+# retention. Not production-tuned.
+#
+# Ports:
+#   6789 broker · 6790 /metrics · 9090 Prometheus · 3000 Grafana
+#   3200 Tempo · 3100 Loki · 4317 Collector OTLP-gRPC · 12345 Alloy UI
+
+services:
+  toymq:
+    build: .
+    image: toymq:dev
+    container_name: toymq
+    ports:
+      - "6789:6789"
+      - "6790:6790"
+    command:
+      - "--addr=0.0.0.0:6789"
+      - "--data-dir=/data"
+      - "--metrics-addr=0.0.0.0:6790"
+      - "--otlp-endpoint=otel-collector:4317"
+      - "--trace-sample-ratio=1.0"
+      - "--log-format=json"
+    volumes:
+      - toymq-data:/data
+    networks:
+      - toymq-obs
+    depends_on:
+      - otel-collector
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.115.0
+    container_name: toymq-otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    networks:
+      - toymq-obs
+    depends_on:
+      - tempo
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: toymq-tempo
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    networks:
+      - toymq-obs
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.3.0
+    container_name: toymq-loki
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    networks:
+      - toymq-obs
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.5.1
+    container_name: toymq-alloy
+    command:
+      - "run"
+      - "--server.http.listen-addr=0.0.0.0:12345"
+      - "--storage.path=/var/lib/alloy/data"
+      - "/etc/alloy/config.alloy"
+    ports:
+      - "12345:12345"
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    networks:
+      - toymq-obs
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.0.0
+    container_name: toymq-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus-stack.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+      - "--enable-feature=exemplar-storage"
+    networks:
+      - toymq-obs
+    depends_on:
+      - toymq
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: toymq-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - ./observability/grafana/provisioning-stack:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    networks:
+      - toymq-obs
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+    restart: unless-stopped
+
+volumes:
+  toymq-data:
+  prometheus-data:
+  grafana-data:
+  tempo-data:
+  loki-data:
+  alloy-data:
+
+networks:
+  toymq-obs:
