@@ -1,0 +1,18 @@
+# Prometheus config for the full LGTM stack (v2 M7.5). Same scrape target
+# as the simple prometheus.yml but adds the SLO rule_files. Exemplar
+# storage is enabled via --enable-feature=exemplar-storage in the compose
+# command so toymq_wal_append_seconds exemplars (trace_id) are queryable
+# and link to Tempo. The simple docker-compose.yml keeps using
+# prometheus.yml unchanged.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: toymq
+    static_configs:
+      - targets: ["toymq:6790"]
