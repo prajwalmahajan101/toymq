@@ -67,13 +67,25 @@ type PauseCommand struct{}
 // ResumeCommand lifts a prior PAUSE for the connection's subscription.
 type ResumeCommand struct{}
 
-func (PubCommand) isCommand()    {}
-func (SubCommand) isCommand()    {}
-func (AckCommand) isCommand()    {}
-func (NackCommand) isCommand()   {}
-func (CreateCommand) isCommand() {}
-func (PauseCommand) isCommand()  {}
-func (ResumeCommand) isCommand() {}
+// TraceparentCommand is an optional, additive W3C trace-context prefix
+// line (ADR 0026): TRACEPARENT <traceparent> [TRACESTATE <tracestate>].
+// It carries no message payload; the session stashes it and applies the
+// extracted remote parent to the NEXT PUB or SUB frame, then clears it.
+// A connection that never sends it behaves exactly as pre-M7 — the
+// opt-in contract. Member of the sealed Command union (ADR 0004).
+type TraceparentCommand struct {
+	Traceparent string
+	Tracestate  string
+}
+
+func (PubCommand) isCommand()         {}
+func (SubCommand) isCommand()         {}
+func (AckCommand) isCommand()         {}
+func (NackCommand) isCommand()        {}
+func (CreateCommand) isCommand()      {}
+func (PauseCommand) isCommand()       {}
+func (ResumeCommand) isCommand()      {}
+func (TraceparentCommand) isCommand() {}
 
 // Hello is the parsed HELLO handshake frame. It is deliberately NOT a
 // member of the Command union: HELLO is a one-shot handshake phase that
