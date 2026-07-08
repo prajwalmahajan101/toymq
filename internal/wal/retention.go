@@ -26,6 +26,18 @@ func (l *Log) RetainedFloor() uint64 {
 	return l.segments[0].baseMsgID
 }
 
+// Head returns the highest MsgID assigned so far and ok=false when the
+// log is empty (no records appended). Used for the consumer-lag gauge
+// (ADR 0027): lag = Head - lastAcked.
+func (l *Log) Head() (msgID uint64, ok bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.nextMsgID == 0 {
+		return 0, false
+	}
+	return l.nextMsgID - 1, true
+}
+
 // SegmentInfos returns a snapshot of every segment, oldest first. The
 // retention sweeper uses it to compute a drop set from size/age policy;
 // it is a point-in-time copy, safe to inspect without holding any lock.

@@ -12,6 +12,8 @@
 package metrics
 
 import (
+	"strconv"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 )
@@ -31,6 +33,20 @@ type Metrics struct {
 	ActiveSubscriptions prometheus.Gauge
 	TopicCount          prometheus.Gauge
 	OffsetsFlushTotal   *prometheus.CounterVec
+
+	// M7 — RED/USE depth (ADR 0027). All follow the same nil-safe
+	// helper pattern and are registered on the same private registry.
+	AckTotal               *prometheus.CounterVec
+	NackTotal              *prometheus.CounterVec
+	ConsumerLag            *prometheus.GaugeVec
+	DLQTotal               *prometheus.CounterVec
+	DelayedPending         *prometheus.GaugeVec
+	RetentionSegmentsTotal prometheus.Counter
+	RetentionBytesTotal    prometheus.Counter
+	PartitionLatestMsgID   *prometheus.GaugeVec
+	WALSegments            *prometheus.GaugeVec
+	CommandErrorsTotal     *prometheus.CounterVec
+	PublishFailureTotal    *prometheus.CounterVec
 }
 
 // NewRegistry returns a fresh Prometheus registry pre-populated with
@@ -105,6 +121,61 @@ func New(r *prometheus.Registry) *Metrics {
 			Name: "toymq_offsets_flush_total",
 			Help: "Offsets-file flushes, by topic and result (ok|error).",
 		}, []string{"topic", "result"}),
+
+		AckTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toymq_ack_total",
+			Help: "Messages acked, by topic and partition.",
+		}, []string{"topic", "partition"}),
+
+		NackTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toymq_nack_total",
+			Help: "Messages nacked, by topic and partition.",
+		}, []string{"topic", "partition"}),
+
+		ConsumerLag: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "toymq_consumer_lag_messages",
+			Help: "Per-(topic, partition, consumer) lag: latest msgID minus last acked msgID.",
+		}, []string{"topic", "partition", "consumer"}),
+
+		DLQTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toymq_dlq_total",
+			Help: "Messages dead-lettered, by topic and trigger (nack|timeout).",
+		}, []string{"topic", "trigger"}),
+
+		DelayedPending: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "toymq_delayed_pending",
+			Help: "Un-fired delayed records currently parked, by topic and partition.",
+		}, []string{"topic", "partition"}),
+
+		RetentionSegmentsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "toymq_retention_segments_reclaimed_total",
+			Help: "Sealed WAL segments dropped by the retention sweeper.",
+		}),
+
+		RetentionBytesTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "toymq_retention_bytes_reclaimed_total",
+			Help: "Bytes reclaimed by the retention sweeper.",
+		}),
+
+		PartitionLatestMsgID: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "toymq_partition_latest_msgid",
+			Help: "Latest (head) msgID per topic/partition.",
+		}, []string{"topic", "partition"}),
+
+		WALSegments: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "toymq_wal_segments",
+			Help: "Live WAL segment count per topic/partition.",
+		}, []string{"topic", "partition"}),
+
+		CommandErrorsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toymq_command_errors_total",
+			Help: "Command/protocol errors, by verb and error code.",
+		}, []string{"verb", "code"}),
+
+		PublishFailureTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toymq_publish_failure_total",
+			Help: "Publishes rejected or failed, by topic.",
+		}, []string{"topic"}),
 	}
 
 	r.MustRegister(
@@ -119,8 +190,24 @@ func New(r *prometheus.Registry) *Metrics {
 		m.ActiveSubscriptions,
 		m.TopicCount,
 		m.OffsetsFlushTotal,
+		m.AckTotal,
+		m.NackTotal,
+		m.ConsumerLag,
+		m.DLQTotal,
+		m.DelayedPending,
+		m.RetentionSegmentsTotal,
+		m.RetentionBytesTotal,
+		m.PartitionLatestMsgID,
+		m.WALSegments,
+		m.CommandErrorsTotal,
+		m.PublishFailureTotal,
 	)
 	return m
+}
+
+// partLabel renders a partition index as a stable string label.
+func partLabel(partition int) string {
+	return strconv.Itoa(partition)
 }
 
 // IncPublish bumps the publish counter (and payload byte counter)
@@ -186,6 +273,112 @@ func (m *Metrics) ObserveWALAppend(topic string, seconds float64) {
 		return
 	}
 	m.WALAppendSeconds.WithLabelValues(topic).Observe(seconds)
+}
+
+// ObserveWALAppendExemplar records the WAL Append+fsync duration and,
+// when traceID is a valid non-empty W3C trace id, attaches it as an
+// exemplar so a latency spike in Grafana links straight to its trace
+// (ADR 0027). Falls back to a plain Observe when the histogram does not
+// support exemplars or traceID is empty.
+func (m *Metrics) ObserveWALAppendExemplar(topic string, seconds float64, traceID string) {
+	if m == nil {
+		return
+	}
+	obs := m.WALAppendSeconds.WithLabelValues(topic)
+	if traceID != "" {
+		if eo, ok := obs.(prometheus.ExemplarObserver); ok {
+			eo.ObserveWithExemplar(seconds, prometheus.Labels{"trace_id": traceID})
+			return
+		}
+	}
+	obs.Observe(seconds)
+}
+
+// IncAck bumps the ack counter for a (topic, partition).
+func (m *Metrics) IncAck(topic string, partition int) {
+	if m == nil {
+		return
+	}
+	m.AckTotal.WithLabelValues(topic, partLabel(partition)).Inc()
+}
+
+// IncNack bumps the nack counter for a (topic, partition).
+func (m *Metrics) IncNack(topic string, partition int) {
+	if m == nil {
+		return
+	}
+	m.NackTotal.WithLabelValues(topic, partLabel(partition)).Inc()
+}
+
+// SetConsumerLag records the per-(topic, partition, consumer) lag
+// (latest msgID minus last acked). A lag of 0 means fully caught up.
+func (m *Metrics) SetConsumerLag(topic string, partition int, consumer string, lag int) {
+	if m == nil {
+		return
+	}
+	if lag < 0 {
+		lag = 0
+	}
+	m.ConsumerLag.WithLabelValues(topic, partLabel(partition), consumer).Set(float64(lag))
+}
+
+// IncDLQ bumps the dead-letter counter. trigger is "nack" or "timeout".
+func (m *Metrics) IncDLQ(topic, trigger string) {
+	if m == nil {
+		return
+	}
+	m.DLQTotal.WithLabelValues(topic, trigger).Inc()
+}
+
+// SetDelayedPending records the count of un-fired delayed records
+// parked in a (topic, partition).
+func (m *Metrics) SetDelayedPending(topic string, partition, n int) {
+	if m == nil {
+		return
+	}
+	m.DelayedPending.WithLabelValues(topic, partLabel(partition)).Set(float64(n))
+}
+
+// AddRetentionReclaimed records a retention-sweep reclaim: the number
+// of sealed segments dropped and the bytes freed.
+func (m *Metrics) AddRetentionReclaimed(segments int, bytes int64) {
+	if m == nil {
+		return
+	}
+	m.RetentionSegmentsTotal.Add(float64(segments))
+	m.RetentionBytesTotal.Add(float64(bytes))
+}
+
+// SetPartitionLatestMsgID records the head msgID of a (topic, partition).
+func (m *Metrics) SetPartitionLatestMsgID(topic string, partition int, msgID uint64) {
+	if m == nil {
+		return
+	}
+	m.PartitionLatestMsgID.WithLabelValues(topic, partLabel(partition)).Set(float64(msgID))
+}
+
+// SetWALSegments records the live segment count of a (topic, partition).
+func (m *Metrics) SetWALSegments(topic string, partition, n int) {
+	if m == nil {
+		return
+	}
+	m.WALSegments.WithLabelValues(topic, partLabel(partition)).Set(float64(n))
+}
+
+// IncCommandError bumps the command-error counter for a verb and code.
+func (m *Metrics) IncCommandError(verb, code string) {
+	if m == nil {
+		return
+	}
+	m.CommandErrorsTotal.WithLabelValues(verb, code).Inc()
+}
+
+// IncPublishFailure bumps the publish-failure counter for a topic.
+func (m *Metrics) IncPublishFailure(topic string) {
+	if m == nil {
+		return
+	}
+	m.PublishFailureTotal.WithLabelValues(topic).Inc()
 }
 
 // IncSessions / DecSessions / IncSubs / DecSubs maintain the
