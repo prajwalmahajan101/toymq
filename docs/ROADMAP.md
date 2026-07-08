@@ -219,18 +219,56 @@ Branch convention: `feat/<milestone-slug>`.
 - **Exit:** three real production patterns (log retention, DLQ, scheduled
   jobs) usable end-to-end.
 
-## v2 M7 — Observability hardening + W3C traceparent
-**Branch:** `feat/traceparent-wire`
-- Optional `TRACEPARENT <w3c-header>` line before any `PUB` /
-  `SUB` frame. Server links its span to the parent; consumer reads it
-  back via a new `MSG ... TRACEPARENT <...>` continuation.
-- `observability/prometheus/alerts.yml` with SLOs: p99 WAL append
-  latency, redelivery rate, inflight backlog, publish-failure rate.
-- Per-consumer lag exporter — gauge of `(latest msgID - last acked
-  msgID)` per `(topic, consumer)`.
-- New ADR — wire-additive but spec'd.
-- **Exit:** Grafana dashboard ships with the alerts pre-loaded; producer
-  → broker → consumer traces stitch in Jaeger.
+## v2 M7 — Observability hardening: correlation + W3C traceparent ✅ *(shipped — branch `feat/observability-m7`)*
+**Branch:** `feat/observability-m7` · **ADRs:** [0026](./adr/0026-traceparent-wire-propagation.md), [0027](./adr/0027-correlated-telemetry.md)
+
+Scope grew from the original "traceparent + alerts" into a full **correlated
+telemetry** story, so the milestone split: **M7** owns the code + wire
+(instrumentation depth, log/trace correlation, TRACEPARENT propagation);
+**M7.5** owns the provisioned Grafana LGTM stack (below). M7 stays wire-additive
+— no new major bump.
+
+- **TRACEPARENT wire (ADR 0026):** optional `TRACEPARENT <w3c-header> [TRACESTATE
+  <...>]` line before a `PUB`/`SUB` frame. The server extracts it with the W3C
+  propagator so `broker.publish` / `broker.subscribe` become **children** of the
+  caller's span — the producer→broker link. Additive/opt-in; a non-TRACEPARENT
+  client is byte-for-byte unchanged. `pkg/client` gets an **otel-free**
+  `WithTraceparentFunc` (respects ADR 0013's stdlib-only client).
+- **Log ↔ trace ↔ metric correlation (ADR 0027):** a `slog.Handler` wrapper
+  injects `trace_id`/`span_id` into `*Context` log lines; a `trace_id` **exemplar**
+  on `toymq_wal_append_seconds` links a latency spike to its trace.
+- **Metrics depth:** +11 series incl. the **per-consumer lag exporter**
+  (`toymq_consumer_lag_messages{topic,partition,consumer}` = latest − last-acked),
+  ack/nack, DLQ, delayed-pending, retention reclaim, `partition_latest_msgid`,
+  `wal_segments`, `command_errors`, `publish_failure`. New spans `broker.ack` /
+  `broker.nack` / `broker.dlq_move`.
+- **Owned risk test:** `internal/integration/m7_test.go` — propagation makes
+  `broker.publish` a child of the client span; a log line carries the matching
+  `trace_id`; a no-TRACEPARENT client is unchanged (root span); lag gauge = head
+  − lastAcked. Passes under `-race`.
+- **Deferred (recorded in ADR 0026):** the broker→consumer `MSG ... TRACEPARENT`
+  continuation — the client MSG parser is fixed-arity, and true end-to-end
+  stitching needs the producer traceparent **persisted in the WAL record** (a
+  v3-adjacent format decision).
+- **Exit:** producer→broker traces stitch; logs/metrics/traces share a
+  `trace_id`. The alerts + Grafana dashboards that *display* them are M7.5.
+
+## v2 M7.5 — Grafana LGTM stack (provisioned)
+**Branch:** `feat/observability-stack` (config only, depends on M7)
+- `docker-compose.observability.yml`: `toymq → OTel Collector → { Tempo (traces),
+  Prometheus w/ exemplar storage (metrics), Loki (logs via Grafana Alloy) } →
+  Grafana`, all provisioned.
+- **Log pipeline (decided, ADR 0027):** JSON stdout + Grafana Alloy → Loki, with
+  a derived field mapping `trace_id` → Tempo. No OTLP log bridge in the hot path.
+- Grafana datasource correlation: Tempo `tracesToLogs`/`tracesToMetrics`, Loki
+  `trace_id`→Tempo derived field, Prometheus exemplar→Tempo.
+- **`observability/prometheus/alerts.yml`** with SLOs: p99 WAL append latency,
+  redelivery rate, inflight backlog, publish-failure rate, consumer-lag ceiling,
+  DLQ rate.
+- Seven dashboards (overview/RED, per-partition, per-consumer lag, WAL+segments+
+  retention, DLQ, flow-control, delayed).
+- **Exit:** `docker compose up` and producer→broker→consumer telemetry is
+  pivotable (log→trace→metric) in one Grafana UI with alerts pre-loaded.
 
 ## v2 M8 — Integration matrix + bench polish + tag `v2.0.0`
 **Branch:** `feat/release-v2`
@@ -253,7 +291,8 @@ Branch convention: `feat/<milestone-slug>`.
 | v2 M4 | Partitions (single-node) | ✅ | [#11](https://github.com/prajwalmahajan101/toymq/pull/11) | — |
 | v2 M5 | Reader backpressure | ✅ | [#12](https://github.com/prajwalmahajan101/toymq/pull/12) | — |
 | v2 M6 | Retention + DLQ + delay | ✅ | [#13](https://github.com/prajwalmahajan101/toymq/pull/13), [#16](https://github.com/prajwalmahajan101/toymq/pull/16), [#17](https://github.com/prajwalmahajan101/toymq/pull/17) | — |
-| v2 M7 | traceparent + alerts | ⬜ | — | — |
+| v2 M7 | Observability: correlation + traceparent | ✅ | — (branch `feat/observability-m7`, PR pending) | — |
+| v2 M7.5 | Grafana LGTM stack (provisioned) | ⬜ | — | — |
 | v2 M8 | Integration matrix + release | ⬜ | — | `v2.0.0` |
 
 ---
