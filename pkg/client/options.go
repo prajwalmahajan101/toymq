@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"crypto/tls"
 	"log/slog"
 )
@@ -8,9 +9,10 @@ import (
 // config holds the resolved Client configuration. Defaults are set
 // in newConfig; Options mutate it.
 type config struct {
-	logger    *slog.Logger
-	authToken string
-	tlsConfig *tls.Config
+	logger        *slog.Logger
+	authToken     string
+	tlsConfig     *tls.Config
+	traceparentFn func(context.Context) (traceparent, tracestate string)
 }
 
 func newConfig() config {
@@ -41,4 +43,16 @@ func WithAuth(token string) Option {
 // nil (the default) dials plaintext.
 func WithTLS(cfg *tls.Config) Option {
 	return func(c *config) { c.tlsConfig = cfg }
+}
+
+// WithTraceparentFunc enables opt-in W3C trace propagation (ADR 0026)
+// without coupling pkg/client to OpenTelemetry (ADR 0013 keeps the client
+// stdlib-only). Before each PUB/SUB the Client calls fn with the call's
+// context; when it returns a non-empty traceparent, the Client prepends a
+// "TRACEPARENT <traceparent> [TRACESTATE <tracestate>]" line so the broker
+// span becomes a child of the caller's span. OTel users wire
+// tracing.TraceparentFromContext here; the default (nil) sends no trace
+// line and behaves exactly as pre-M7.
+func WithTraceparentFunc(fn func(context.Context) (traceparent, tracestate string)) Option {
+	return func(c *config) { c.traceparentFn = fn }
 }

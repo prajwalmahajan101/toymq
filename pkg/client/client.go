@@ -38,6 +38,27 @@ type Client struct {
 	// sites go through Client.log so the nil-check stays in one
 	// place.
 	logger *slog.Logger
+
+	// traceparentFn is nil unless WithTraceparentFunc was set. When set,
+	// Pub/Sub prepend a TRACEPARENT line built from it (ADR 0026).
+	traceparentFn func(context.Context) (string, string)
+}
+
+// traceparentLine returns the "TRACEPARENT ...\n" prefix line to send
+// before a PUB/SUB, or "" when propagation is off or the context carries
+// no active span. Kept here so the nil-check lives in one place.
+func (c *Client) traceparentLine(ctx context.Context) string {
+	if c.traceparentFn == nil {
+		return ""
+	}
+	tp, ts := c.traceparentFn(ctx)
+	if tp == "" {
+		return ""
+	}
+	if ts == "" {
+		return "TRACEPARENT " + tp + "\n"
+	}
+	return "TRACEPARENT " + tp + " TRACESTATE " + ts + "\n"
 }
 
 // log emits a record at level if a logger is configured; otherwise
@@ -65,12 +86,13 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 	}
 
 	c := &Client{
-		conn:    conn,
-		r:       bufio.NewReader(conn),
-		w:       bufio.NewWriter(conn),
-		done:    make(chan struct{}),
-		pending: newPendingQueue(),
-		logger:  cfg.logger,
+		conn:          conn,
+		r:             bufio.NewReader(conn),
+		w:             bufio.NewWriter(conn),
+		done:          make(chan struct{}),
+		pending:       newPendingQueue(),
+		logger:        cfg.logger,
+		traceparentFn: cfg.traceparentFn,
 	}
 
 	// HELLO handshake, synchronous and before readLoop starts (readLoop

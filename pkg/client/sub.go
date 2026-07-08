@@ -26,6 +26,8 @@ func (c *Client) Sub(ctx context.Context, topic, consumerID string) (<-chan Deli
 	ch := c.deliveryCh
 	c.subMu.Unlock()
 
+	traceLine := c.traceparentLine(ctx)
+
 	p := c.pending.push()
 
 	c.writeMu.Lock()
@@ -34,6 +36,14 @@ func (c *Client) Sub(ctx context.Context, topic, consumerID string) (<-chan Deli
 		c.pending.cancel(p)
 		c.rollbackSub()
 		return nil, ErrClosed
+	}
+	if traceLine != "" {
+		if _, werr := c.w.WriteString(traceLine); werr != nil {
+			c.writeMu.Unlock()
+			c.pending.cancel(p)
+			c.rollbackSub()
+			return nil, fmt.Errorf("%w: write TRACEPARENT: %w", ErrTransport, werr)
+		}
 	}
 	if _, werr := fmt.Fprintf(c.w, "SUB %s %s\n", topic, consumerID); werr != nil {
 		c.writeMu.Unlock()

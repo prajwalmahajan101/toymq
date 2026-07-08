@@ -38,6 +38,8 @@ func (c *Client) PubDelay(ctx context.Context, topic, dedupeKey, routingKey stri
 	}
 	header += "\n"
 
+	traceLine := c.traceparentLine(ctx)
+
 	p := c.pending.push()
 
 	c.writeMu.Lock()
@@ -45,6 +47,13 @@ func (c *Client) PubDelay(ctx context.Context, topic, dedupeKey, routingKey stri
 		c.writeMu.Unlock()
 		c.pending.cancel(p)
 		return 0, false, ErrClosed
+	}
+	if traceLine != "" {
+		if _, werr := c.w.WriteString(traceLine); werr != nil {
+			c.writeMu.Unlock()
+			c.pending.cancel(p)
+			return 0, false, fmt.Errorf("%w: write TRACEPARENT: %w", ErrTransport, werr)
+		}
 	}
 	if _, werr := c.w.WriteString(header); werr != nil {
 		c.writeMu.Unlock()
