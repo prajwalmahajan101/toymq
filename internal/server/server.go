@@ -184,6 +184,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.metrics.IncSessions()
 			defer s.metrics.DecSessions()
 			sess := NewSession(c, s.broker, s.auth)
+			sess.metrics = s.metrics
 			sess.Run(ctx)
 		}(conn)
 

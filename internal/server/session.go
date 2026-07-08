@@ -7,9 +7,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 
 	"github.com/prajwalmahajan101/toymq/internal/broker"
+	"github.com/prajwalmahajan101/toymq/internal/metrics"
 	"github.com/prajwalmahajan101/toymq/internal/proto"
+	"github.com/prajwalmahajan101/toymq/internal/tracing"
 )
 
 const (
@@ -27,6 +30,10 @@ type Session struct {
 	maxPayload int
 	auth       authConfig
 
+	// metrics is optional (nil = off); set by the server after NewSession.
+	// Used to count command/protocol errors (ADR 0027). Helpers nil-check.
+	metrics *metrics.Metrics
+
 	respCh chan func(*bufio.Writer) error
 	sendCh chan *broker.Inflight
 
@@ -40,6 +47,12 @@ type Session struct {
 	currentTopic  string
 	currentSubs   []*broker.Subscription
 	currentCancel context.CancelFunc
+
+	// pendingTraceparent/pendingTracestate hold a TRACEPARENT prefix line
+	// (ADR 0026) until the next PUB/SUB consumes it, then are cleared. Empty
+	// unless the client opted into trace propagation. Reader-only state.
+	pendingTraceparent string
+	pendingTracestate  string
 }
 
 // NewSession builds an idle Session ready for Run. The underlying
@@ -173,6 +186,11 @@ func (s *Session) handleParsed(ctx context.Context, cmd proto.Command, err error
 		}
 		if errors.Is(err, proto.ErrInvalidCommand) || errors.Is(err, proto.ErrPayloadTooLarge) {
 			reason := err.Error()
+			code := "INVALID"
+			if errors.Is(err, proto.ErrPayloadTooLarge) {
+				code = "PAYLOAD_TOO_LARGE"
+			}
+			s.metrics.IncCommandError(verbOf(reason), code)
 			s.sendResp(func(bw *bufio.Writer) error {
 				return proto.WriteErr(bw, "INVALID", reason)
 			})
@@ -191,6 +209,21 @@ func (s *Session) handleParsed(ctx context.Context, cmd proto.Command, err error
 	return true
 }
 
+// knownVerbs is used only to label command_errors: on a parse failure the
+// Command is nil, so the verb is recovered from the error text (which
+// echoes the offending verb) for a low-cardinality metric label (ADR 0027).
+var knownVerbs = []string{"PUB", "SUB", "ACK", "NACK", "CREATE", "PAUSE", "RESUME", "TRACEPARENT", "HELLO"}
+
+// verbOf returns the first known verb mentioned in reason, or "unknown".
+func verbOf(reason string) string {
+	for _, v := range knownVerbs {
+		if strings.Contains(reason, v) {
+			return v
+		}
+	}
+	return "unknown"
+}
+
 func (s *Session) sendResp(fn func(*bufio.Writer) error) {
 	select {
 	case s.respCh <- fn:
@@ -201,11 +234,11 @@ func (s *Session) sendResp(fn func(*bufio.Writer) error) {
 func (s *Session) handleCommand(ctx context.Context, cmd proto.Command) {
 	switch c := cmd.(type) {
 	case proto.PubCommand:
-		s.handlePub(c)
+		s.handlePub(ctx, c)
 	case proto.AckCommand:
-		s.handleAck(c)
+		s.handleAck(ctx, c)
 	case proto.NackCommand:
-		s.handleNack(c)
+		s.handleNack(ctx, c)
 	case proto.SubCommand:
 		s.handleSub(ctx, c)
 	case proto.CreateCommand:
@@ -214,7 +247,26 @@ func (s *Session) handleCommand(ctx context.Context, cmd proto.Command) {
 		s.handlePauseResume(true)
 	case proto.ResumeCommand:
 		s.handlePauseResume(false)
+	case proto.TraceparentCommand:
+		// A prefix line, not a request: stash it for the next PUB/SUB and
+		// send no response frame (ADR 0026).
+		s.pendingTraceparent = c.Traceparent
+		s.pendingTracestate = c.Tracestate
 	}
+}
+
+// takeTraceCtx derives a context from parent carrying the remote span
+// parent of any pending TRACEPARENT line, then clears the pending state so
+// it applies to exactly one PUB/SUB. With no pending line it returns
+// parent unchanged (the additive path).
+func (s *Session) takeTraceCtx(parent context.Context) context.Context {
+	if s.pendingTraceparent == "" {
+		return parent
+	}
+	ctx := tracing.ContextWithTraceparent(parent, s.pendingTraceparent, s.pendingTracestate)
+	s.pendingTraceparent = ""
+	s.pendingTracestate = ""
+	return ctx
 }
 
 // handlePauseResume applies a PAUSE (paused=true) or RESUME to every
@@ -239,8 +291,8 @@ func (s *Session) handlePauseResume(paused bool) {
 	})
 }
 
-func (s *Session) handlePub(c proto.PubCommand) {
-	id, _, dup, err := s.broker.PublishCtx(context.Background(), c.Topic, c.DedupeKey, c.RoutingKey, c.Partition, c.PartitionSet, c.Payload, c.DelayMs)
+func (s *Session) handlePub(ctx context.Context, c proto.PubCommand) {
+	id, _, dup, err := s.broker.PublishCtx(s.takeTraceCtx(ctx), c.Topic, c.DedupeKey, c.RoutingKey, c.Partition, c.PartitionSet, c.Payload, c.DelayMs)
 	if err != nil {
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {
@@ -273,14 +325,14 @@ func (s *Session) handleCreate(c proto.CreateCommand) {
 	})
 }
 
-func (s *Session) handleAck(c proto.AckCommand) {
+func (s *Session) handleAck(ctx context.Context, c proto.AckCommand) {
 	if s.currentTopic == "" {
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "NO_SUB", "ACK requires a prior SUB")
 		})
 		return
 	}
-	if err := s.broker.Ack(s.currentTopic, c.Partition, c.ConsumerID, c.MsgID); err != nil {
+	if err := s.broker.AckCtx(s.takeTraceCtx(ctx), s.currentTopic, c.Partition, c.ConsumerID, c.MsgID); err != nil {
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "ACK_FAILED", reason)
@@ -294,14 +346,14 @@ func (s *Session) handleAck(c proto.AckCommand) {
 	})
 }
 
-func (s *Session) handleNack(c proto.NackCommand) {
+func (s *Session) handleNack(ctx context.Context, c proto.NackCommand) {
 	if s.currentTopic == "" {
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "NO_SUB", "NACK requires a prior SUB")
 		})
 		return
 	}
-	if err := s.broker.Nack(s.currentTopic, c.Partition, c.ConsumerID, c.MsgID, s.sendCh); err != nil {
+	if err := s.broker.NackCtx(s.takeTraceCtx(ctx), s.currentTopic, c.Partition, c.ConsumerID, c.MsgID, s.sendCh); err != nil {
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "NACK_FAILED", reason)
@@ -358,7 +410,7 @@ func (s *Session) handleSub(ctx context.Context, c proto.SubCommand) {
 		return proto.WriteOK(bw, 0)
 	})
 
-	subCtx, cancel := context.WithCancel(ctx)
+	subCtx, cancel := context.WithCancel(s.takeTraceCtx(ctx))
 	subs, err := s.broker.Subscribe(subCtx, c.Topic, c.Partition, c.AllPartitions, c.ConsumerID, s.sendCh)
 	if err != nil {
 		// Unreachable in practice — the topic exists and the selector was
