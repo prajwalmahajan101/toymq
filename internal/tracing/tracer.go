@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
@@ -92,6 +93,35 @@ type sdkProvider struct{ tp *sdktrace.TracerProvider }
 func (s *sdkProvider) Tracer() trace.Tracer { return s.tp.Tracer(tracerName) }
 func (s *sdkProvider) Shutdown(ctx context.Context) error {
 	return s.tp.Shutdown(ctx)
+}
+
+// propagator is the W3C TraceContext propagator used to serialise and
+// parse the optional TRACEPARENT/TRACESTATE wire lines (ADR 0026). It is
+// stateless, so a single package value is safe for concurrent use.
+var propagator = propagation.TraceContext{}
+
+// ContextWithTraceparent returns a context whose remote span parent is
+// extracted from the given W3C traceparent/tracestate strings. An empty
+// traceparent (or an unparsable one) returns ctx unchanged, so a span
+// started under it is a fresh root — the opt-in, additive contract.
+func ContextWithTraceparent(ctx context.Context, traceparent, tracestate string) context.Context {
+	if traceparent == "" {
+		return ctx
+	}
+	carrier := propagation.MapCarrier{"traceparent": traceparent}
+	if tracestate != "" {
+		carrier["tracestate"] = tracestate
+	}
+	return propagator.Extract(ctx, carrier)
+}
+
+// TraceparentFromContext serialises the active span context in ctx to
+// W3C traceparent/tracestate strings for the TRACEPARENT wire line.
+// Returns empty strings when ctx carries no valid span context.
+func TraceparentFromContext(ctx context.Context) (traceparent, tracestate string) {
+	carrier := propagation.MapCarrier{}
+	propagator.Inject(ctx, carrier)
+	return carrier["traceparent"], carrier["tracestate"]
 }
 
 // Convenience attribute keys used by call sites in broker / wal.
