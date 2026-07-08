@@ -1,0 +1,46 @@
+// Grafana Alloy — tails the ToyMQ container's stdout (JSON logs, ADR 0027)
+// and ships them to Loki (v2 M7.5). The broker runs with --log-format=json,
+// so each line carries a trace_id when a span is active; the Grafana Loki
+// datasource extracts it as a derived field to link log -> trace in Tempo.
+// This keeps trace correlation without an OTLP log bridge in the hot path.
+
+// Discover running Docker containers via the mounted docker socket.
+discovery.docker "containers" {
+	host = "unix:///var/run/docker.sock"
+}
+
+// Keep only the toymq container; expose its name as the `container` label
+// and set a stable `job` for querying.
+discovery.relabel "toymq" {
+	targets = discovery.docker.containers.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(toymq)"
+		action        = "keep"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+	}
+
+	rule {
+		target_label = "job"
+		replacement  = "toymq"
+	}
+}
+
+// Read container logs and forward them to Loki.
+loki.source.docker "toymq" {
+	host       = "unix:///var/run/docker.sock"
+	targets    = discovery.relabel.toymq.output
+	forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}
