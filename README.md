@@ -373,8 +373,10 @@ curl localhost:6790/metrics | grep '^toymq_'
 curl localhost:6790/healthz
 ```
 
-Eleven `toymq_*` series (plus the standard `go_*` / `process_*`
-collectors registered automatically):
+The `toymq_*` series (plus the standard `go_*` / `process_*`
+collectors registered automatically). The v2 M7 additions (marked ★,
+ADR 0027) broaden coverage to RED/USE; `toymq_wal_append_seconds`
+carries a `trace_id` **exemplar** linking a latency spike to its trace:
 
 | Series | Type | Labels |
 |---|---|---|
@@ -384,11 +386,21 @@ collectors registered automatically):
 | `toymq_subscribe_total` | counter | topic |
 | `toymq_inflight_messages` | gauge | topic, consumer |
 | `toymq_redelivery_total` | counter | topic, attempts_bucket |
-| `toymq_wal_append_seconds` | histogram | topic |
+| `toymq_wal_append_seconds` | histogram (★ exemplar) | topic |
 | `toymq_active_sessions` | gauge | — |
 | `toymq_active_subscriptions` | gauge | — |
 | `toymq_topic_count` | gauge | — |
 | `toymq_offsets_flush_total` | counter | topic, result |
+| ★ `toymq_ack_total` / `toymq_nack_total` | counter | topic, partition |
+| ★ `toymq_consumer_lag_messages` | gauge | topic, partition, consumer |
+| ★ `toymq_dlq_total` | counter | topic, trigger |
+| ★ `toymq_delayed_pending` | gauge | topic, partition |
+| ★ `toymq_retention_segments_reclaimed_total` | counter | — |
+| ★ `toymq_retention_bytes_reclaimed_total` | counter | — |
+| ★ `toymq_partition_latest_msgid` | gauge | topic, partition |
+| ★ `toymq_wal_segments` | gauge | topic, partition |
+| ★ `toymq_command_errors_total` | counter | verb, code |
+| ★ `toymq_publish_failure_total` | counter | topic |
 
 ### Tracing (OTLP)
 
@@ -404,21 +416,48 @@ toymq --metrics-addr :6790 \
 # spans "broker.publish", "broker.subscribe".
 ```
 
-Spans are added at `broker.Publish`, `broker.Subscribe`, the
-`wal.Log.Append` hot path, and the redelivery sweep. Sample ratio
-defaults to `0.05` (5% of root spans); set to `1.0` for debugging.
+Spans are added at `broker.Publish`, `broker.Subscribe`, `broker.ack`,
+`broker.nack`, `broker.dlq_move`, and the `wal.Log.Append` hot path.
+Sample ratio defaults to `0.05` (5% of root spans); set to `1.0` for
+debugging.
+
+### Cross-process trace propagation (v2 M7, ADR 0026)
+
+A client may prepend an optional `TRACEPARENT <w3c-header>` line before a
+`PUB`/`SUB`; the broker extracts it so `broker.publish` / `broker.subscribe`
+become **children** of the caller's span. It is additive and opt-in — a
+client that never sends it is unchanged. `pkg/client` enables it *without*
+depending on OpenTelemetry via a callback:
+
+```go
+c, _ := client.Dial(ctx, addr,
+    client.WithTraceparentFunc(tracing.TraceparentFromContext))
+```
+
+### Full LGTM stack (v2 M7.5)
+
+For correlated logs ↔ traces ↔ metrics in one Grafana UI:
+
+```bash
+docker compose -f docker-compose.observability.yml up -d --build
+open http://localhost:3000   # Grafana: dashboards + Explore
+```
+
+Adds an OTel Collector → **Tempo** (traces), **Loki** fed by **Grafana
+Alloy** tailing the broker's JSON logs, and Prometheus with exemplar
+storage — on top of the metrics stack. A `trace_id` links a log line
+(Loki) → its span (Tempo) → a metric exemplar (Prometheus). SLO alert
+rules load from `observability/prometheus/alerts.yml`; dashboards cover
+overview, broker internals, consumers, and traces/correlation.
 
 ### Limitations
 
-- **No cross-process trace propagation.** The wire protocol does
-  not carry a W3C `traceparent` line yet, so broker spans are
-  always root spans. A future protocol revision can close the
-  loop with `pkg/client`.
-- **`pkg/client` stays silent.** Per ADR 0013, the client library
-  has no metrics or spans. Consumers wrap `Pub` / `Sub` at their
-  layer for client-side observability.
-- **No alerting rules.** The dashboard ships; alert rules are a
-  follow-up once SLOs are defined.
+- **MSG → consumer trace continuation is deferred** (ADR 0026). Producer→broker
+  propagation works; stitching the *consumer* into the same trace needs the
+  producer traceparent persisted in the WAL record (a v3-adjacent format
+  decision). Recorded, not built.
+- **`pkg/client` stays silent by default.** Per ADR 0013 the client has no
+  metrics or spans; trace propagation is opt-in via `WithTraceparentFunc`.
 
 ---
 

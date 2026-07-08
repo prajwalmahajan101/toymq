@@ -253,8 +253,8 @@ telemetry** story, so the milestone split: **M7** owns the code + wire
 - **Exit:** producer→broker traces stitch; logs/metrics/traces share a
   `trace_id`. The alerts + Grafana dashboards that *display* them are M7.5.
 
-## v2 M7.5 — Grafana LGTM stack (provisioned)
-**Branch:** `feat/observability-stack` (config only, depends on M7)
+## v2 M7.5 — Grafana LGTM stack (provisioned) ✅ *(shipped — branch `feat/observability-stack`)*
+**Branch:** `feat/observability-stack` (config only, stacked on `feat/observability-m7`)
 - `docker-compose.observability.yml`: `toymq → OTel Collector → { Tempo (traces),
   Prometheus w/ exemplar storage (metrics), Loki (logs via Grafana Alloy) } →
   Grafana`, all provisioned.
@@ -265,10 +265,15 @@ telemetry** story, so the milestone split: **M7** owns the code + wire
 - **`observability/prometheus/alerts.yml`** with SLOs: p99 WAL append latency,
   redelivery rate, inflight backlog, publish-failure rate, consumer-lag ceiling,
   DLQ rate.
-- Seven dashboards (overview/RED, per-partition, per-consumer lag, WAL+segments+
-  retention, DLQ, flow-control, delayed).
-- **Exit:** `docker compose up` and producer→broker→consumer telemetry is
-  pivotable (log→trace→metric) in one Grafana UI with alerts pre-loaded.
+- Dashboards: the existing overview plus 3 consolidated boards — broker
+  internals (WAL/segments/retention/delayed/flow-control), consumers
+  (lag/ack/nack/redelivery/DLQ), and traces/correlation (exemplars + logs).
+  Consolidated (4 files) rather than 7 thin ones; same metric coverage.
+- **Exit:** `docker compose -f docker-compose.observability.yml up` and
+  producer→broker→consumer telemetry is pivotable (log→trace→metric) in one
+  Grafana UI with alerts pre-loaded. *(Configs validated:
+  `docker compose config`, `promtool check rules` (6 rules), metric-name
+  cross-check; live `up --build` smoke is the manual step.)*
 
 ## v2 M8 — Integration matrix + bench polish + tag `v2.0.0`
 **Branch:** `feat/release-v2`
@@ -292,7 +297,7 @@ telemetry** story, so the milestone split: **M7** owns the code + wire
 | v2 M5 | Reader backpressure | ✅ | [#12](https://github.com/prajwalmahajan101/toymq/pull/12) | — |
 | v2 M6 | Retention + DLQ + delay | ✅ | [#13](https://github.com/prajwalmahajan101/toymq/pull/13), [#16](https://github.com/prajwalmahajan101/toymq/pull/16), [#17](https://github.com/prajwalmahajan101/toymq/pull/17) | — |
 | v2 M7 | Observability: correlation + traceparent | ✅ | — (branch `feat/observability-m7`, PR pending) | — |
-| v2 M7.5 | Grafana LGTM stack (provisioned) | ⬜ | — | — |
+| v2 M7.5 | Grafana LGTM stack (provisioned) | ✅ | — (branch `feat/observability-stack`, PR pending) | — |
 | v2 M8 | Integration matrix + release | ⬜ | — | `v2.0.0` |
 
 ---
