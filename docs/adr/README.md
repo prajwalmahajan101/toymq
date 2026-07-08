@@ -37,6 +37,8 @@
 | 0023 | [WAL segmentation + retention](./0023-wal-segmentation-retention.md) | Accepted |
 | 0024 | [Dead-letter queue](./0024-dead-letter-queue.md) | Accepted |
 | 0025 | [Delayed messages](./0025-delayed-messages.md) | Accepted |
+| 0026 | [TRACEPARENT wire propagation](./0026-traceparent-wire-propagation.md) | Accepted |
+| 0027 | [Correlated telemetry (logs ↔ traces ↔ metrics)](./0027-correlated-telemetry.md) | Accepted |
 
 Each ADR is a short snapshot of *why* a decision was made, captured at the
 time the decision landed in code. They are not living docs — when a decision
