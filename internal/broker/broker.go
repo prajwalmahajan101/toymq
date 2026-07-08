@@ -426,10 +426,12 @@ func (b *Broker) PublishCtx(ctx context.Context, topic, dedupeKey, routingKey st
 
 	t, err := b.getOrCreateTopic(topic)
 	if err != nil {
+		b.metrics.IncPublishFailure(topic)
 		return 0, 0, false, err
 	}
 	p, err := t.route(partition, partitionSet, routingKey)
 	if err != nil {
+		b.metrics.IncPublishFailure(topic)
 		return 0, 0, false, err
 	}
 	id, dup, err := p.publishCtx(ctx, dedupeKey, payload, delayMs, b.metrics)
@@ -440,6 +442,8 @@ func (b *Broker) PublishCtx(ctx context.Context, topic, dedupeKey, routingKey st
 		} else {
 			b.metrics.IncPublish(topic, len(payload))
 		}
+	} else {
+		b.metrics.IncPublishFailure(topic)
 	}
 	return id, p.id, dup, err
 }
@@ -519,6 +523,17 @@ func (b *Broker) startSpan(ctx context.Context, name string, attrs ...attribute.
 	return b.tracer.Start(ctx, name, trace.WithAttributes(attrs...))
 }
 
+// traceIDFromCtx returns the W3C trace-id string of the active span in
+// ctx, or "" when there is none (the noop provider path). Used to attach
+// exemplars to metric observations (ADR 0027).
+func traceIDFromCtx(ctx context.Context) string {
+	sc := trace.SpanContextFromContext(ctx)
+	if sc.HasTraceID() {
+		return sc.TraceID().String()
+	}
+	return ""
+}
+
 // partitionAt returns the numbered partition of topic, range-checking it.
 func (b *Broker) partitionAt(topic string, partition int) (*Partition, error) {
 	t, err := b.getOrCreateTopic(topic)
@@ -535,6 +550,20 @@ func (b *Broker) partitionAt(topic string, partition int) (*Partition, error) {
 // on topic. Advances lastAcked when msgID is contiguous; otherwise records
 // in aboveLast. Marks the consumer dirty for the next persist tick.
 func (b *Broker) Ack(topic string, partition int, consumerID string, msgID uint64) error {
+	return b.AckCtx(context.Background(), topic, partition, consumerID, msgID)
+}
+
+// AckCtx is Ack with a context carrying the caller's span. It records a
+// "broker.ack" child span (no-op under the noop provider) and updates the
+// ack counter and per-consumer lag gauge (ADR 0027).
+func (b *Broker) AckCtx(ctx context.Context, topic string, partition int, consumerID string, msgID uint64) error {
+	_, span := b.startSpan(ctx, "broker.ack",
+		tracing.AttrTopic.String(topic),
+		tracing.AttrConsumerID.String(consumerID),
+		tracing.AttrMsgID.Int64(int64(msgID)),
+	)
+	defer span.End()
+
 	p, err := b.partitionAt(topic, partition)
 	if err != nil {
 		return err
@@ -543,10 +572,13 @@ func (b *Broker) Ack(topic string, partition int, consumerID string, msgID uint6
 	if err := c.Ack(msgID); err != nil {
 		return err
 	}
+	b.metrics.IncAck(topic, partition)
 	c.mu.Lock()
 	n := len(c.inflight)
+	lastAcked := c.lastAcked
 	c.mu.Unlock()
 	b.metrics.SetInflight(topic, consumerID, n)
+	b.metrics.SetConsumerLag(topic, partition, consumerID, int(p.head())-int(lastAcked))
 	return nil
 }
 
@@ -554,6 +586,20 @@ func (b *Broker) Ack(topic string, partition int, consumerID string, msgID uint6
 // immediate redelivery (non-blocking; the redelivery ticker covers
 // the buffer-full case) and bumps Attempts.
 func (b *Broker) Nack(topic string, partition int, consumerID string, msgID uint64, sendCh chan<- *Inflight) error {
+	return b.NackCtx(context.Background(), topic, partition, consumerID, msgID, sendCh)
+}
+
+// NackCtx is Nack with a context carrying the caller's span. Records a
+// "broker.nack" child span and bumps the nack (and, on a DLQ move, the
+// dlq) counters (ADR 0027).
+func (b *Broker) NackCtx(ctx context.Context, topic string, partition int, consumerID string, msgID uint64, sendCh chan<- *Inflight) error {
+	ctx, span := b.startSpan(ctx, "broker.nack",
+		tracing.AttrTopic.String(topic),
+		tracing.AttrConsumerID.String(consumerID),
+		tracing.AttrMsgID.Int64(int64(msgID)),
+	)
+	defer span.End()
+
 	p, err := b.partitionAt(topic, partition)
 	if err != nil {
 		return err
@@ -563,14 +609,16 @@ func (b *Broker) Nack(topic string, partition int, consumerID string, msgID uint
 	if err != nil {
 		return err
 	}
+	b.metrics.IncNack(topic, partition)
 	if killed != nil {
-		slog.Info("dead-lettering message",
+		slog.InfoContext(ctx, "dead-lettering message",
 			"topic", topic, "partition", partition, "consumer-id", consumerID,
 			"msg-id", msgID, "attempts", killed.Attempts, "trigger", "nack")
+		b.metrics.IncDLQ(topic, "nack")
 		// Best-effort move (ADR 0024): the message was synthetically acked
 		// out of the source inflight; a failed append to <topic>.dlq is
 		// logged inside dlqMove, not surfaced to the client's NACK.
-		_ = b.dlqMove(topic, killed.Payload)
+		_ = b.dlqMoveCtx(ctx, topic, killed.Payload)
 	} else {
 		select {
 		case sendCh <- redeliver:
