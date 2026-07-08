@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/metrics"
@@ -49,6 +50,13 @@ type Partition struct {
 
 	pubMu sync.Mutex
 
+	// pendingDelayed counts un-fired delayed records parked in this
+	// partition, exported as toymq_delayed_pending (ADR 0027). Best-effort
+	// and in-process only (like the DLQ attempt count, ADR 0024): it resets
+	// to 0 on restart, so a delayed record published before a restart fires
+	// without a matching increment — decDelayed clamps at 0 for that case.
+	pendingDelayed atomic.Int64
+
 	consumersMu sync.RWMutex
 	consumers   map[string]*Consumer
 }
@@ -82,7 +90,6 @@ func rebuildIndexes(dedupe *DedupeIndex, rec wal.Record) {
 // the original MsgID and duplicate=true without a new WAL write. The
 // context carries any active OTel span; m may be nil.
 func (p *Partition) publishCtx(ctx context.Context, dedupeKey string, payload []byte, delayMs uint64, m *metrics.Metrics) (msgID uint64, duplicate bool, err error) {
-	_ = ctx
 	p.pubMu.Lock()
 	defer p.pubMu.Unlock()
 
@@ -113,13 +120,42 @@ func (p *Partition) publishCtx(ctx context.Context, dedupeKey string, payload []
 	if err != nil {
 		return 0, false, err
 	}
-	m.ObserveWALAppend(p.topic, time.Since(start).Seconds())
+	// Exemplar links a WAL-latency spike to the publishing trace (ADR 0027);
+	// traceIDFromCtx returns "" under the noop provider, degrading to a plain
+	// Observe.
+	m.ObserveWALAppendExemplar(p.topic, time.Since(start).Seconds(), traceIDFromCtx(ctx))
+	m.SetPartitionLatestMsgID(p.topic, p.id, id)
+	if visibleAtNs > 0 {
+		m.SetDelayedPending(p.topic, p.id, int(p.pendingDelayed.Add(1)))
+	}
 
 	if dedupeKey != "" {
 		p.dedupe.Insert(dedupeKey, id)
 	}
 
 	return id, false, nil
+}
+
+// decDelayed decrements the parked-delayed counter when a delayed record
+// fires, clamping at 0 (a record published before a restart has no
+// matching increment in this process — see the pendingDelayed comment).
+func (p *Partition) decDelayed(m *metrics.Metrics) {
+	n := p.pendingDelayed.Add(-1)
+	if n < 0 {
+		p.pendingDelayed.CompareAndSwap(n, 0)
+		n = 0
+	}
+	m.SetDelayedPending(p.topic, p.id, int(n))
+}
+
+// head returns the partition's highest assigned MsgID, or 0 when empty.
+// Used for the consumer-lag gauge (ADR 0027).
+func (p *Partition) head() uint64 {
+	id, ok := p.log.Head()
+	if !ok {
+		return 0
+	}
+	return id
 }
 
 func (p *Partition) getOrCreateConsumer(id string) *Consumer {
@@ -227,8 +263,11 @@ func (p *Partition) runDelivery(ctx context.Context, c *Consumer, sub *Subscript
 		// head-of-line by design (use a dedicated partition for delayed
 		// traffic if that is unwanted). The record is not yet inflight, so
 		// no receive-window slot is held while parked.
-		if rec.VisibleAtNs > 0 && !awaitVisible(ctx, rec.VisibleAtNs) {
-			return
+		if rec.VisibleAtNs > 0 {
+			if !awaitVisible(ctx, rec.VisibleAtNs) {
+				return
+			}
+			p.decDelayed(m)
 		}
 
 		inf := &Inflight{
@@ -287,7 +326,7 @@ func (p *Partition) subscribe(ctx context.Context, consumerID string, sendCh cha
 	}
 
 	startID, _ := p.consumerStartID(c)
-	slog.Info("consumer subscribed",
+	slog.InfoContext(ctx, "consumer subscribed",
 		"topic", p.topic,
 		"partition", p.id,
 		"consumer-id", consumerID,

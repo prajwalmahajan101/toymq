@@ -67,6 +67,7 @@ func (b *Broker) sweepRedelivery(now time.Time) {
 					slog.Info("dead-lettering message",
 						"topic", t.name, "partition", p.id, "consumer-id", c.ID,
 						"msg-id", inf.MsgID, "attempts", inf.Attempts, "trigger", "timeout")
+					b.metrics.IncDLQ(t.name, "timeout")
 					_ = b.dlqMove(t.name, inf.Payload)
 				}
 			}

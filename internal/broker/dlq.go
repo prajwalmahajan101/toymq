@@ -1,8 +1,11 @@
 package broker
 
 import (
+	"context"
 	"log/slog"
 	"strings"
+
+	"github.com/prajwalmahajan101/toymq/internal/tracing"
 )
 
 // dlqSuffix names the auto-created dead-letter topic for a source topic:
@@ -36,14 +39,25 @@ func (b *Broker) dlqThreshold(topic string) int {
 // applies the append deterministically (the in-memory Attempts count is
 // the v2 trigger input only).
 func (b *Broker) dlqMove(srcTopic string, payload []byte) error {
+	return b.dlqMoveCtx(context.Background(), srcTopic, payload)
+}
+
+// dlqMoveCtx is dlqMove with a context carrying the caller's span; it
+// records a "broker.dlq_move" child span (ADR 0027) around the republish.
+func (b *Broker) dlqMoveCtx(ctx context.Context, srcTopic string, payload []byte) error {
 	dlqTopic := srcTopic + dlqSuffix
+	ctx, span := b.startSpan(ctx, "broker.dlq_move",
+		tracing.AttrTopic.String(dlqTopic),
+		tracing.AttrPayloadBytes.Int(len(payload)),
+	)
+	defer span.End()
 
 	// Ensure a single-partition .dlq topic. A pre-existing topic with a
 	// different count returns an error from CreateTopic; ignore it and
 	// publish to the existing topic rather than failing the move.
 	_ = b.CreateTopic(dlqTopic, 1)
 
-	_, _, _, err := b.Publish(dlqTopic, "", "", 0, false, payload)
+	_, _, _, err := b.PublishCtx(ctx, dlqTopic, "", "", 0, false, payload, 0)
 	if err != nil {
 		slog.Error("dlq move", "src-topic", srcTopic, "dlq-topic", dlqTopic, "err", err)
 	}

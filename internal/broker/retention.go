@@ -100,6 +100,15 @@ func (b *Broker) sweepPartitionRetention(p *Partition, now time.Time) {
 		return
 	}
 
+	// Sum the bytes about to be reclaimed (segments below keepIndex) before
+	// the drop, for the retention-bytes counter (ADR 0027).
+	var reclaimBytes int64
+	for _, s := range segs {
+		if s.Index < keepIndex {
+			reclaimBytes += int64(s.Bytes)
+		}
+	}
+
 	dropped, floor, err := p.log.DropSegmentsBefore(keepIndex)
 	if err != nil {
 		slog.Error("retention drop", "topic", p.topic, "partition", p.id, "err", err)
@@ -111,6 +120,8 @@ func (b *Broker) sweepPartitionRetention(p *Partition, now time.Time) {
 			"segments-dropped", dropped,
 			"retained-floor-msg-id", floor,
 		)
+		b.metrics.AddRetentionReclaimed(dropped, reclaimBytes)
+		b.metrics.SetWALSegments(p.topic, p.id, len(segs)-dropped)
 	}
 }
 
