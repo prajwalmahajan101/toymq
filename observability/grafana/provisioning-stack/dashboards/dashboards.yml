@@ -1,0 +1,14 @@
+# Dashboard provider for the full LGTM stack (v2 M7.5). Loads every JSON
+# under /var/lib/grafana/dashboards — the same directory the simple stack
+# uses, so the overview board is shared and the M7.5 boards are additive.
+apiVersion: 1
+
+providers:
+  - name: ToyMQ
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

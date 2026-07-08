@@ -1,0 +1,108 @@
+{
+  "title": "ToyMQ \u2014 Traces & correlation",
+  "uid": "toymq-traces",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "tags": [
+    "toymq"
+  ],
+  "timezone": "browser",
+  "panels": [
+    {
+      "type": "text",
+      "title": "How to pivot",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Correlated telemetry (ADR 0026/0027).** Click an **exemplar** dot on the WAL-latency panel to jump to its **trace** in Tempo. From a Tempo span, use *Logs for this span* to reach **Loki**. In the logs panel below, click a line's **TraceID** derived field to jump back to the **trace**. Metrics \u2194 traces \u2194 logs, all joined by `trace_id`."
+      },
+      "id": 1
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL append latency (s) with exemplars",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, topic) (rate(toymq_wal_append_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{topic}}",
+          "refId": "A",
+          "exemplar": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "id": 2
+    },
+    {
+      "type": "logs",
+      "title": "Broker logs (trace_id \u2192 Tempo via derived field)",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "expr": "{job=\"toymq\"}",
+          "refId": "A",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Descending"
+      },
+      "id": 3
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  }
+}
