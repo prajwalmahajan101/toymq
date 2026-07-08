@@ -1,0 +1,68 @@
+# ToyMQ SLO alert rules (v2 M7.5, ADR 0027). Loaded by Prometheus via
+# rule_files. Thresholds are dev-stack defaults — tune per deployment.
+groups:
+  - name: toymq-slo
+    rules:
+      # p99 WAL append+fsync latency over 100ms sustained: durability path
+      # is slow (disk pressure, batched-fsync misconfig).
+      - alert: ToymqWalAppendP99High
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(toymq_wal_append_seconds_bucket[5m])) by (le, topic)
+          ) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "WAL append p99 > 100ms (topic {{ $labels.topic }})"
+          description: "toymq_wal_append_seconds p99 has exceeded 100ms for 10m."
+
+      # Sustained redelivery: consumers failing or timing out messages.
+      - alert: ToymqRedeliveryRateHigh
+        expr: sum(rate(toymq_redelivery_total[5m])) by (topic) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redelivery rate > 1/s (topic {{ $labels.topic }})"
+          description: "Messages are being redelivered persistently; check consumer health."
+
+      # Inflight backlog: delivered-but-unacked piling up near/over the window.
+      - alert: ToymqInflightBacklogHigh
+        expr: sum(toymq_inflight_messages) by (topic, consumer) > 200
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Inflight backlog > 200 ({{ $labels.topic }}/{{ $labels.consumer }})"
+          description: "Consumer is not acking fast enough; approaching the receive window."
+
+      # Publish failures: producers being rejected.
+      - alert: ToymqPublishFailures
+        expr: sum(rate(toymq_publish_failure_total[5m])) by (topic) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Publish failures (topic {{ $labels.topic }})"
+          description: "toymq_publish_failure_total is increasing; publishes are being rejected."
+
+      # Consumer lag ceiling: a consumer falling far behind the log head.
+      - alert: ToymqConsumerLagHigh
+        expr: max(toymq_consumer_lag_messages) by (topic, partition, consumer) > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer lag > 1000 ({{ $labels.topic }}/{{ $labels.partition }}/{{ $labels.consumer }})"
+          description: "Consumer is more than 1000 messages behind the partition head."
+
+      # DLQ rate: messages being dead-lettered — poison payloads or a broken consumer.
+      - alert: ToymqDlqRateHigh
+        expr: sum(rate(toymq_dlq_total[5m])) by (topic) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dead-letter rate > 0.1/s (topic {{ $labels.topic }})"
+          description: "Messages are being dead-lettered; inspect {{ $labels.topic }}.dlq."
