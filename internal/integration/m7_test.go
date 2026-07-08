@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,6 +80,26 @@ func startM7Broker(t *testing.T) *m7Harness {
 	return &m7Harness{addr: addr, metrics: m, tracer: tracer, recorder: rec}
 }
 
+// syncBuffer is a concurrency-safe bytes.Buffer. TestLogJoinsTrace shares
+// the log sink between the broker's logging goroutines and the asserting
+// test goroutine, so the raw bytes.Buffer would race under -race.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
 // findSpan returns the first ended span with the given name.
 func findSpan(spans []sdktrace.ReadOnlySpan, name string) (sdktrace.ReadOnlySpan, bool) {
 	for _, s := range spans {
@@ -138,10 +159,10 @@ func TestLogJoinsTrace(t *testing.T) {
 
 	// Redirect the default logger through the correlation handler into a
 	// buffer for the duration of this (non-parallel) test.
-	var buf bytes.Buffer
+	buf := &syncBuffer{}
 	prev := slog.Default()
 	slog.SetDefault(slog.New(logging.NewCorrelationHandler(
-		slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}),
+		slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}),
 	)))
 	defer slog.SetDefault(prev)
 
