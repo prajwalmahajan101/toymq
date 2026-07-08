@@ -48,6 +48,9 @@ func ParseCommandLine(line string, br *bufio.Reader, maxPayload int) (Command, e
 
 	case "RESUME":
 		return parseResume(fields)
+
+	case "TRACEPARENT":
+		return parseTraceparent(line)
 	default:
 		return nil, fmt.Errorf("%w: Unknown verb %q", ErrInvalidCommand, fields[0])
 	}
@@ -269,6 +272,31 @@ func parseResume(fields []string) (Command, error) {
 		return nil, fmt.Errorf("%w: RESUME takes no arguments, got %d", ErrInvalidCommand, len(fields)-1)
 	}
 	return ResumeCommand{}, nil
+}
+
+// parseTraceparent parses the optional trace-context prefix line (ADR 0026):
+//
+//	TRACEPARENT <traceparent>
+//	TRACEPARENT <traceparent> TRACESTATE <tracestate>
+//
+// Both values are single space-free tokens (W3C traceparent is fixed-form;
+// tracestate is a comma-separated list with no required spaces). Validation
+// of the traceparent value itself is left to the W3C propagator downstream:
+// a malformed value simply fails to extract a parent, degrading to a fresh
+// root span rather than erroring the connection.
+func parseTraceparent(line string) (Command, error) {
+	fields := strings.Fields(line)
+	switch len(fields) {
+	case 2:
+		return TraceparentCommand{Traceparent: fields[1]}, nil
+	case 4:
+		if fields[2] != "TRACESTATE" {
+			return nil, fmt.Errorf("%w: TRACEPARENT third field must be TRACESTATE, got %q", ErrInvalidCommand, fields[2])
+		}
+		return TraceparentCommand{Traceparent: fields[1], Tracestate: fields[3]}, nil
+	default:
+		return nil, fmt.Errorf("%w: TRACEPARENT expects <traceparent> [TRACESTATE <tracestate>], got %d args", ErrInvalidCommand, len(fields)-1)
+	}
 }
 
 func parseCreate(fields []string) (Command, error) {
