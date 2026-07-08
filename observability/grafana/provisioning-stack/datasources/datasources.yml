@@ -1,0 +1,57 @@
+# Grafana datasources for the full LGTM stack (v2 M7.5, ADR 0027). The
+# correlation wiring here is what makes logs <-> traces <-> metrics
+# pivotable in one UI:
+#   - Prometheus exemplar (trace_id) -> Tempo
+#   - Tempo span    -> Loki logs (tracesToLogs) and Prometheus (tracesToMetrics)
+#   - Loki log line -> Tempo (derived field on the JSON trace_id)
+# The simple docker-compose.yml uses the metrics-only provisioning/ dir
+# instead; this one is mounted only by docker-compose.observability.yml.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        tags:
+          - key: service.name
+            value: job
+      tracesToMetrics:
+        datasourceUid: prometheus
+      serviceMap:
+        datasourceUid: prometheus
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      derivedFields:
+        # Extract trace_id from the broker's JSON log lines and link to Tempo.
+        - name: TraceID
+          matcherType: regex
+          matcherRegex: '"trace_id":"(\w+)"'
+          url: "${__value.raw}"
+          datasourceUid: tempo
