@@ -1,0 +1,30 @@
+# Tempo — single-binary, local-storage config for the ToyMQ dev stack
+# (v2 M7.5). Ephemeral trace storage under /var/tempo; not production-tuned.
+
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 1h # dev: keep traces for an hour
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks

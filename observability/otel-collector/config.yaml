@@ -1,0 +1,31 @@
+# OpenTelemetry Collector — dev-grade config for the ToyMQ LGTM stack
+# (v2 M7.5). It receives OTLP traces from the broker (--otlp-endpoint) and
+# forwards them to Tempo. Metrics are scraped by Prometheus directly from
+# the broker's /metrics endpoint, and logs go Alloy -> Loki, so the
+# collector only handles the trace pipeline here.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 2s
+
+exporters:
+  # Tempo speaks OTLP; TLS is off on the internal compose network.
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo]
