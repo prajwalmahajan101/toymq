@@ -66,10 +66,17 @@ func idx(n, p int) int {
 // writeReport emits the human-readable stats block. Fields are
 // labelled and tab-aligned so the output stays grep-friendly.
 func writeReport(w io.Writer, s Stats, cfg benchConfig) {
-	fmt.Fprintf(w, "toymq-bench  addr=%s  topic=%s  producers=%d  msgs=%d  size=%d  fsync=%s\n",
-		cfg.Addr, cfg.Topic, cfg.Producers, cfg.Msgs, cfg.Size, cfg.Fsync)
+	fmt.Fprintf(w, "toymq-bench  addr=%s  topic=%s  producers=%d  msgs=%d  size=%d  partitions=%d  fsync=%s  tls=%t\n",
+		cfg.Addr, cfg.Topic, cfg.Producers, cfg.Msgs, cfg.Size, cfg.Partitions, cfg.Fsync, cfg.TLS)
 	fmt.Fprintf(w, "elapsed     %s\n", s.Elapsed.Round(time.Millisecond))
 	fmt.Fprintf(w, "throughput  %.1f msg/s   %.2f MiB/s\n", s.Throughput, s.MiBPerSec)
+	// Per-partition throughput. Keyless publishes round-robin across the N
+	// partitions (ADR 0021), so aggregate/N is the honest per-partition rate.
+	parts := cfg.Partitions
+	if parts < 1 {
+		parts = 1
+	}
+	fmt.Fprintf(w, "per-part    ~%.1f msg/s across %d partition(s)\n", s.Throughput/float64(parts), parts)
 	fmt.Fprintf(w, "latency     min=%s  p50=%s  p95=%s  p99=%s  max=%s\n",
 		fmtDur(s.Min), fmtDur(s.P50), fmtDur(s.P95), fmtDur(s.P99), fmtDur(s.Max))
 	fmt.Fprintf(w, "errors      %d\n", s.Errors)
