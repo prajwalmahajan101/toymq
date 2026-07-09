@@ -12,62 +12,24 @@ import (
 
 	"github.com/prajwalmahajan101/toymq/internal/broker"
 	"github.com/prajwalmahajan101/toymq/internal/server"
-	"github.com/prajwalmahajan101/toymq/internal/testcerts"
 	"github.com/prajwalmahajan101/toymq/pkg/client"
 )
 
 // securedBroker starts an in-process broker+server with the given
 // handshake policy and (optionally) TLS, returning the dial address and
-// a client TLS config (nil for plaintext).
+// a client TLS config (nil for plaintext). It delegates to the shared
+// harness so the M3 matrix and the M8 cross-product exercise one code path.
 func securedBroker(t *testing.T, tokens []string, useTLS bool) (addr string, cliTLS *tls.Config) {
 	t.Helper()
-	b, err := broker.NewWithTimings(t.TempDir(), defaultDedupeCap, defaultVisibility, defaultRedeliverInterval)
-	if err != nil {
-		t.Fatalf("broker: %v", err)
-	}
-
-	opts := []server.Option{server.WithRequireHello(true)}
+	var opts []harnessOpt
 	if len(tokens) > 0 {
-		opts = append(opts, server.WithTokens(tokens))
+		opts = append(opts, withAuth(tokens))
 	}
 	if useTLS {
-		certPEM, keyPEM, err := testcerts.GenerateSelfSigned("127.0.0.1")
-		if err != nil {
-			t.Fatalf("cert: %v", err)
-		}
-		srvCfg, err := testcerts.ServerConfig(certPEM, keyPEM)
-		if err != nil {
-			t.Fatalf("server tls: %v", err)
-		}
-		cliTLS, err = testcerts.ClientConfig(certPEM)
-		if err != nil {
-			t.Fatalf("client tls: %v", err)
-		}
-		opts = append(opts, server.WithTLS(srvCfg))
+		opts = append(opts, withTLS())
 	}
-
-	srv := server.New("127.0.0.1:0", b, opts...)
-	ctx, cancel := context.WithCancel(context.Background())
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.Serve(ctx) }()
-
-	deadline := time.Now().Add(defaultAddrPollTimeout)
-	for srv.Addr() == "" {
-		if time.Now().After(deadline) {
-			t.Fatal("server did not bind")
-		}
-		time.Sleep(defaultAddrPollInterval)
-	}
-
-	t.Cleanup(func() {
-		sc, cc := context.WithTimeout(context.Background(), defaultShutdownTimeout)
-		defer cc()
-		_ = srv.Shutdown(sc)
-		cancel()
-		<-serveErr
-		_ = b.Close()
-	})
-	return srv.Addr(), cliTLS
+	h := startBroker(t, opts...)
+	return h.addr, h.cliTLS
 }
 
 // TestHelloAuthTLSMatrix drives the owned risk matrix for v2 M3:
