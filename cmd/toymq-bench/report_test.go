@@ -95,13 +95,39 @@ func TestWriteReport_HasExpectedLabels(t *testing.T) {
 		P99:        5 * time.Millisecond,
 		Max:        10 * time.Millisecond,
 	}
-	cfg := benchConfig{Addr: "x", Topic: "t", Producers: 1, Msgs: 100, Size: 32}
+	cfg := benchConfig{Addr: "x", Topic: "t", Producers: 1, Msgs: 100, Size: 32, Partitions: 4, Fsync: "batched", TLS: true}
 	var buf bytes.Buffer
 	writeReport(&buf, s, cfg)
-	for _, want := range []string{"toymq-bench", "elapsed", "throughput", "latency", "p50=", "p95=", "p99=", "errors"} {
+	for _, want := range []string{"toymq-bench", "elapsed", "throughput", "latency", "p50=", "p95=", "p99=", "errors",
+		"partitions=4", "fsync=batched", "tls=true", "per-part"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Fatalf("report missing %q: %s", want, buf.String())
 		}
+	}
+}
+
+// TestWriteReport_PerPartitionThroughput: the per-partition line is the
+// aggregate throughput divided by the partition count (keyless round-robin).
+func TestWriteReport_PerPartitionThroughput(t *testing.T) {
+	s := Stats{Total: 100, Elapsed: time.Second, Throughput: 400}
+	cfg := benchConfig{Partitions: 4, Fsync: "per-message"}
+	var buf bytes.Buffer
+	writeReport(&buf, s, cfg)
+	// 400 / 4 = 100 msg/s per partition.
+	if !strings.Contains(buf.String(), "~100.0 msg/s across 4 partition(s)") {
+		t.Fatalf("per-partition line wrong: %s", buf.String())
+	}
+}
+
+// TestWriteReport_PartitionsZeroDefaultsToOne: an unset partition count must
+// not divide by zero.
+func TestWriteReport_PartitionsZeroDefaultsToOne(t *testing.T) {
+	s := Stats{Total: 10, Elapsed: time.Second, Throughput: 50}
+	cfg := benchConfig{} // Partitions == 0
+	var buf bytes.Buffer
+	writeReport(&buf, s, cfg)
+	if !strings.Contains(buf.String(), "~50.0 msg/s across 1 partition(s)") {
+		t.Fatalf("zero-partition fallback wrong: %s", buf.String())
 	}
 }
 

@@ -34,6 +34,27 @@ func TestRun_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestRun_EndToEndTLSPartitions confirms the bench drives a TLS listener
+// across partitions and the report renders the end-to-end p99 line with
+// tls=true and the per-partition breakdown (roadmap v2 M8).
+func TestRun_EndToEndTLSPartitions(t *testing.T) {
+	addr, caFile := startBrokerTLS(t)
+	var out, errBuf bytes.Buffer
+	code := run(context.Background(),
+		[]string{"--addr", addr, "--producers", "2", "--msgs", "200", "--size", "32",
+			"--partitions", "4", "--tls", "--tls-ca", caFile},
+		&out, &errBuf)
+	if code != exitOK {
+		t.Fatalf("code=%d stderr=%q", code, errBuf.String())
+	}
+	s := out.String()
+	for _, want := range []string{"partitions=4", "tls=true", "per-part", "p99=", "errors      0"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("report missing %q: %s", want, s)
+		}
+	}
+}
+
 func TestRun_BadFlag(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run(context.Background(), []string{"--bogus"}, &out, &errBuf)
