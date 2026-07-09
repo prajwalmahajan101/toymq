@@ -8,12 +8,15 @@ package integration
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/broker"
 	"github.com/prajwalmahajan101/toymq/internal/server"
+	"github.com/prajwalmahajan101/toymq/internal/testcerts"
+	"github.com/prajwalmahajan101/toymq/internal/wal"
 )
 
 const (
@@ -38,9 +41,40 @@ type harnessOpts struct {
 	dataDir           string
 	retention         broker.RetentionConfig
 	dlqAfterNacks     int
+	// syncMode / syncInterval select the WAL fsync strategy (ADR 0019).
+	// The zero value (wal.SyncPerMessage) preserves pre-M2 behaviour.
+	syncMode     wal.SyncMode
+	syncInterval time.Duration
+	// tokens, when non-empty, arms bearer-token auth and mandates the
+	// HELLO handshake (ADR 0020). useTLS terminates TLS on the listener
+	// with a self-signed cert; the matching client *tls.Config is exposed
+	// on the harness as cliTLS.
+	tokens []string
+	useTLS bool
 }
 
 type harnessOpt func(*harnessOpts)
+
+// withSyncMode selects the WAL fsync strategy (v2 M2, ADR 0019). interval
+// applies only to wal.SyncBatched (<=0 falls back to the WAL default).
+func withSyncMode(mode wal.SyncMode, interval time.Duration) harnessOpt {
+	return func(o *harnessOpts) {
+		o.syncMode = mode
+		o.syncInterval = interval
+	}
+}
+
+// withAuth arms bearer-token auth (v2 M3, ADR 0020). The server accepts
+// only clients whose HELLO carries one of these tokens.
+func withAuth(tokens []string) harnessOpt {
+	return func(o *harnessOpts) { o.tokens = tokens }
+}
+
+// withTLS terminates TLS on the listener with a self-signed 127.0.0.1
+// cert (v2 M3, ADR 0020). The matching client config lands on harness.cliTLS.
+func withTLS() harnessOpt {
+	return func(o *harnessOpts) { o.useTLS = true }
+}
 
 // withRetention enables WAL segmentation + reclaim (v2 M6, ADR 0023).
 func withRetention(rc broker.RetentionConfig) harnessOpt {
@@ -81,6 +115,9 @@ type harness struct {
 	cancel   context.CancelFunc
 	serveErr chan error
 	opts     harnessOpts
+	// cliTLS is the client TLS config a caller must dial with when the
+	// harness was built with withTLS; nil for a plaintext listener.
+	cliTLS *tls.Config
 }
 
 func startBroker(t *testing.T, opts ...harnessOpt) *harness {
@@ -126,12 +163,14 @@ func buildHarness(t *testing.T, opts harnessOpts) *harness {
 	if window < 1 {
 		window = defaultRecvWindow
 	}
-	b, err := broker.NewWithObservability(opts.dataDir, opts.dedupeCap, parts, window, opts.visibility, opts.redeliverInterval, broker.SyncConfig{}, opts.retention, opts.dlqAfterNacks, nil, nil)
+	sc := broker.SyncConfig{Mode: opts.syncMode, Interval: opts.syncInterval}
+	b, err := broker.NewWithObservability(opts.dataDir, opts.dedupeCap, parts, window, opts.visibility, opts.redeliverInterval, sc, opts.retention, opts.dlqAfterNacks, nil, nil)
 	if err != nil {
 		t.Fatalf("broker.NewWithObservability: %v", err)
 	}
 
-	srv := server.New("127.0.0.1:0", b)
+	srvOpts, cliTLS := securedServerOpts(t, opts)
+	srv := server.New("127.0.0.1:0", b, srvOpts...)
 	ctx, cancel := context.WithCancel(context.Background())
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ctx) }()
@@ -151,7 +190,38 @@ func buildHarness(t *testing.T, opts harnessOpts) *harness {
 		cancel:   cancel,
 		serveErr: serveErr,
 		opts:     opts,
+		cliTLS:   cliTLS,
 	}
+}
+
+// securedServerOpts turns the auth/TLS harness knobs into server.Options
+// and, for TLS, generates a self-signed cert pair — returning the matching
+// client *tls.Config. Auth or TLS mandates the HELLO handshake (ADR 0020).
+func securedServerOpts(t *testing.T, opts harnessOpts) (srvOpts []server.Option, cliTLS *tls.Config) {
+	t.Helper()
+	if len(opts.tokens) == 0 && !opts.useTLS {
+		return nil, nil
+	}
+	srvOpts = append(srvOpts, server.WithRequireHello(true))
+	if len(opts.tokens) > 0 {
+		srvOpts = append(srvOpts, server.WithTokens(opts.tokens))
+	}
+	if opts.useTLS {
+		certPEM, keyPEM, err := testcerts.GenerateSelfSigned("127.0.0.1")
+		if err != nil {
+			t.Fatalf("cert: %v", err)
+		}
+		srvCfg, err := testcerts.ServerConfig(certPEM, keyPEM)
+		if err != nil {
+			t.Fatalf("server tls: %v", err)
+		}
+		cliTLS, err = testcerts.ClientConfig(certPEM)
+		if err != nil {
+			t.Fatalf("client tls: %v", err)
+		}
+		srvOpts = append(srvOpts, server.WithTLS(srvCfg))
+	}
+	return srvOpts, cliTLS
 }
 
 func waitForAddr(srv *server.Server, timeout time.Duration) (string, error) {
