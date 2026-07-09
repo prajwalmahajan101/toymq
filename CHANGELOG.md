@@ -4,14 +4,16 @@ All notable changes to ToyMQ are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] — unreleased
+## [Unreleased]
 
-The **"Useful" single-node** line (v2 M1–M7.5). Makes ToyMQ usable for
+## [2.0.0] — 2026-07-10
+
+The **"Useful" single-node** line (v2 M1–M8). Makes ToyMQ usable for
 small real workloads: durable dedupe, tunable fsync, off-host auth/TLS,
 partitions, flow control, retention/DLQ/delayed messages, and a correlated
 observability stack. Two wire-breaking changes (M3 HELLO frame, M4 partition
-arity) are clustered behind this major bump. Date/tag pending manual
-verification (v2 M8).
+arity) are clustered behind this major bump. Verified via the M8 cross-product
+integration matrix and a full hands-on manual-test pass.
 
 ### Added
 
@@ -179,9 +181,10 @@ as minor versions.
 - Replication, authentication, TLS, observability hooks. See
   [`README.md` § Roadmap](README.md#roadmap).
 
-<!-- Compare links. The 2.0.0 target resolves once the tag is cut (v2 M8). -->
+<!-- Compare links. -->
 
-[2.0.0]: https://github.com/prajwalmahajan101/toymq/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/prajwalmahajan101/toymq/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/prajwalmahajan101/toymq/compare/v1.3.0...v2.0.0
 [1.3.0]: https://github.com/prajwalmahajan101/toymq/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/prajwalmahajan101/toymq/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/prajwalmahajan101/toymq/compare/v1.0.0...v1.1.0

@@ -275,7 +275,7 @@ telemetry** story, so the milestone split: **M7** owns the code + wire
   `docker compose config`, `promtool check rules` (6 rules), metric-name
   cross-check; live `up --build` smoke is the manual step.)*
 
-## v2 M8 — Integration matrix + bench polish + tag `v2.0.0`
+## v2 M8 — Integration matrix + bench polish + tag `v2.0.0` ✅ *(shipped — [PR #23](https://github.com/prajwalmahajan101/toymq/pull/23), [PR #24](https://github.com/prajwalmahajan101/toymq/pull/24); tagged `v2.0.0`)*
 **Branch:** `feat/release-v2`
 - Cross-product integration: `{per-message, batched} × {plain, TLS} ×
   {auth, no-auth} × {1, 4 partitions}`.
@@ -298,7 +298,7 @@ telemetry** story, so the milestone split: **M7** owns the code + wire
 | v2 M6 | Retention + DLQ + delay | ✅ | [#13](https://github.com/prajwalmahajan101/toymq/pull/13), [#16](https://github.com/prajwalmahajan101/toymq/pull/16), [#17](https://github.com/prajwalmahajan101/toymq/pull/17) | — |
 | v2 M7 | Observability: correlation + traceparent | ✅ | [#19](https://github.com/prajwalmahajan101/toymq/pull/19) | — |
 | v2 M7.5 | Grafana LGTM stack (provisioned) | ✅ | [#21](https://github.com/prajwalmahajan101/toymq/pull/21) | — |
-| v2 M8 | Integration matrix + release | ⬜ | — | `v2.0.0` |
+| v2 M8 | Integration matrix + release | ✅ | [#23](https://github.com/prajwalmahajan101/toymq/pull/23), [#24](https://github.com/prajwalmahajan101/toymq/pull/24) | `v2.0.0` |
 
 ---
 
