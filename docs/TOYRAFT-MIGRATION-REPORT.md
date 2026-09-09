@@ -9,8 +9,9 @@
 > gaps, feature requests, and what worked) that flows back to toyraft to be triaged
 > into its `v1.0.0` release.
 
-> **Status:** ⬜ not started. The integration (v3 M1–M6) has **not yet run**, so this
-> report is **intentionally empty**. It is **authored incrementally, not
+> **Status:** 🟡 in progress — **v3 M1 complete** (single-node replicated path).
+> The findings below are recorded from running embedded code, each with a repro.
+> M2–M6 are not yet run. It is **authored incrementally, not
 > pre-written** — findings are recorded here **only once observed against running
 > embedded code**, each with a repro. Analysis-derived expectations (the readiness
 > audit, known upstream gaps) live in the roadmap's
@@ -53,10 +54,7 @@ Reproducible defects in toyraft observed during integration.
 
 | ID | Severity | Status | Summary | Repro | toyraft area |
 |---|---|---|---|---|---|
-| _(none yet)_ | | | | | |
-
-_Template — one row per reproduced defect:_
-`| BUG-01 | 🔴 | [confirmed-in-integration] | one line | minimal steps / test name | pkg/… |`
+| BUG-01 | 🔴 | [confirmed-in-integration] | **In-memory log not restored on restart.** `newNode` constructs `log: &Log{}` (empty) and loads only `HardState`, so after restart `log.LastIndex()==0` while `commitIndex` is recovered from `HardState`. Replay-apply works (the driver reads committed entries straight from `Storage`), but a fresh `Propose` appends at `LastIndex()+1 == 1`, which is `≤ commitIndex`, and the entry is dropped with `ErrProposalDropped`. A restarted single node therefore recovers and replays but **cannot accept new writes**. | Publish 3 via `--replicate`, `node.Stop()` + broker `Close()`, reopen + re-attach raft: `Status()` reports `Role=Leader, Term=2, CommitIndex=3, ApplyIndex=3, LastLogIndex=0`; the next `Publish` returns `raft: proposal dropped (leadership lost before commit)`. | `pkg/raft` (`node.go` `newNode`) |
 
 ---
 
@@ -67,7 +65,9 @@ Places where the frozen public API is workable but cost toymq extra code or clar
 
 | ID | Severity | Status | Finding |
 |---|---|---|---|
-| _(none yet)_ | | | |
+| FRICTION-01 | 🟠 | [confirmed-in-integration] | **`Propose` discards the `Apply` result.** `raft.Node.Propose` returns `(Index, Term, error)` and drops `Apply`'s `any` return, so a PUB's WAL-assigned MsgID cannot come back through `Propose`. toymq had to build a nonce-result registry (`internal/replication/registry.go`): the leader stamps a nonce, registers a channel, and `Apply` resolves it. The rc.2 reference `kvsm` hits the same wall — it exposes a separate `Get` for exactly this reason. **Request:** return the apply result from `Propose`, or expose a typed result channel. `pkg/raft`. |
+| FRICTION-02 | 🟠 | [confirmed-in-integration] | **`inproc` transport unusable by external embedders.** `inproc.HubConfig.Clock` is typed `internal/clock.Clock` — an external module cannot construct it — and `NewHub` hard-errors on a nil Clock. So the in-process transport (ideal for a single-node embed and for tests) cannot be built outside the toyraft module. `pkg/transport/inproc`. |
+| FRICTION-03 | 🟠 | [confirmed-in-integration] | **No transport expresses a `peers=[self]` cluster.** `http.Config.Validate` rejects an empty `PeerURLs` *and* rejects this node's own ID in `PeerURLs`. A single-node cluster (peers == [self], so `PeerURLs` excludes self → empty) satisfies neither. Combined with FRICTION-02, **neither shipped transport can build a single-node cluster**; toymq supplies a local no-op `raft.Transport` (`internal/replication/transport.go`). `pkg/transport/http`. |
 
 ---
 
@@ -80,7 +80,7 @@ they land here only if integration confirms toymq actually hits them.)*
 
 | ID | Severity | Status | Request |
 |---|---|---|---|
-| _(none yet)_ | | | |
+| FEAT-01 | 🔴 | [confirmed-in-integration] | **No persistent applied index; snapshots stubbed → replay double-applies.** With no durable applied index and `Snapshot`/`Restore` returning `ErrSnapshotUnsupported`, a restart replays the **entire** committed log through `Apply`. An embedder that keeps its own durable applied-state store (toymq's WAL) therefore double-applies every command. **Confirmed:** publish 3 with `--replicate`, restart → partition head 5 instead of 2 (six records instead of three). toymq worked around duplication with a WAL-embedded raft-index high-water (ADR 0028 §5), but that only prevents *duplication* — it cannot restore write capability (see BUG-01). **Request:** persist the applied index (or ship working snapshots) so an embedder can resume without re-applying, confirming the UP-1 line. This is the crux of the M1 crash-durability gap. |
 
 ---
 
@@ -91,7 +91,7 @@ each cost integration time or risked a correctness bug.
 
 | ID | Severity | Status | Gap |
 |---|---|---|---|
-| _(none yet)_ | | | |
+| DOC-01 | 🟡 | [confirmed-in-integration] | **No guidance on transport choice for an external embedder.** The constraints that rule out both shipped transports for a single node (FRICTION-02/03) are only discoverable by hitting the `NewHub`/`Validate` errors at runtime. A short "embedding toyraft: transports" note — or an exported single-node/no-op transport — would have saved the round trip. `pkg/transport`. |
 
 ---
 
@@ -102,7 +102,9 @@ accidentally regressed.
 
 | ID | Status | Note |
 |---|---|---|
-| _(none yet)_ | | |
+| PRAISE-01 | [confirmed-in-integration] | **Nil-clock defaulting is genuinely external-embed-friendly.** Both `raft.Config` and (as of the rc.2 fix) `http.Config` default a nil `Clock` to the real clock, with a comment naming the exact reason — "external consumers who cannot construct `internal/clock`." That is the affordance FRICTION-02 is missing on `inproc`; where it exists, embedding is frictionless. |
+| PRAISE-02 | [confirmed-in-integration] | **In-order single-goroutine `Apply` made determinism free.** `Apply` runs on one goroutine in strict index order, so a per-partition WAL counter advances identically on every node with no coordination. The two-broker byte-identical-WAL determinism test passed on the first run. |
+| PRAISE-03 | [confirmed-in-integration] | **`Propose` blocks until locally applied**, so reading the nonce-registry channel right after `Propose` returns is race-free — the result is guaranteed present. The blocking contract turned the "return the MsgID" problem into a simple channel read. |
 
 ---
 
@@ -112,7 +114,33 @@ Appended as each milestone runs. Each entry: what was integrated, what surfaced
 (cross-referenced to §1–§5), and what got worked around.
 
 ### v3 M1 — embed + determinism seam
-_Not started._
+**Integrated:** `toyraft v1.0.0-rc.2` embedded behind `toymq --replicate`. Every
+mutating command (PUB/ACK/NACK/CREATE) flows `Propose → StateMachine.Apply`
+through a new `internal/replication` package (command envelope, `brokerSM`,
+nonce-result registry, single-node no-op transport). Standalone mode is
+byte-identical to v2 (the full integration matrix + `internal/wal` codec tests
+pass with `RaftIndex` omitted when zero).
+
+**Surfaced:**
+- **BUG-01** (§1) — restart does not restore the in-memory log; a restarted node
+  recovers/replays but cannot accept new writes.
+- **FEAT-01** (§3) — no persistent applied index + stubbed snapshots → the whole
+  committed log re-applies on restart (double-apply confirmed). This is the
+  crux of the crash-durability gap.
+- **FRICTION-01/02/03** (§2) — `Propose` discards the `Apply` result (forced the
+  nonce registry); neither shipped transport can build a `peers=[self]` cluster
+  (forced a local no-op transport).
+- **DOC-01** (§4), **PRAISE-01/02/03** (§5).
+
+**Worked around:** WAL-embedded `RaftIndex` high-water makes replay idempotent
+(no duplication); local no-op transport for the single-node plane; nonce
+registry for the MsgID return path. Determinism + apply-once + idempotent-replay
+verified under `-race`.
+
+**Blocked / carried to upstream:** full SIGKILL-and-keep-serving crash-durability
+cannot pass on rc.2 (BUG-01 + FEAT-01). The idempotent-replay half is done and
+verified; write-after-restart waits on an upstream applied-index/log-restore
+fix. Deferred, not silently skipped.
 
 ### v3 M2 — multi-node + election
 _Not started._

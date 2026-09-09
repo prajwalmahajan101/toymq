@@ -39,6 +39,7 @@
 | 0025 | [Delayed messages](./0025-delayed-messages.md) | Accepted |
 | 0026 | [TRACEPARENT wire propagation](./0026-traceparent-wire-propagation.md) | Accepted |
 | 0027 | [Correlated telemetry (logs ↔ traces ↔ metrics)](./0027-correlated-telemetry.md) | Accepted |
+| 0028 | [Raft embedding, command envelope & the WAL↔Raft-log invariant](./0028-raft-embedding-command-envelope.md) | Accepted |
 
 Each ADR is a short snapshot of *why* a decision was made, captured at the
 time the decision landed in code. They are not living docs — when a decision
