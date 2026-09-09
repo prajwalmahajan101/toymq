@@ -72,8 +72,9 @@ func feedStream(t *testing.T, stream []replication.Envelope) (string, *Broker) {
 	t.Cleanup(func() { _ = b.Close() })
 
 	sm := replication.NewBrokerSM(b)
-	for i, env := range stream {
-		if _, err := sm.Apply(raft.Entry{Index: raft.Index(i + 1), Term: 1, Data: replication.Encode(env)}); err != nil {
+	for i := range stream {
+		env := &stream[i]
+		if _, err := sm.Apply(raft.Entry{Index: raft.Index(i + 1), Term: 1, Data: replication.Encode(*env)}); err != nil {
 			t.Fatalf("Apply entry %d (%v): %v", i, env.Kind, err)
 		}
 	}

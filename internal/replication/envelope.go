@@ -78,8 +78,7 @@ type Envelope struct {
 // envelope only ever lives inside Entry.Data.
 func Encode(env Envelope) []byte {
 	var b []byte
-	b = append(b, EnvelopeVersion)
-	b = append(b, byte(env.Kind))
+	b = append(b, EnvelopeVersion, byte(env.Kind))
 
 	var scratch [8]byte
 	putU64 := func(v uint64) {
