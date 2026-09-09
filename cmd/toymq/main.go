@@ -18,9 +18,12 @@ import (
 	"github.com/prajwalmahajan101/toymq/internal/config"
 	"github.com/prajwalmahajan101/toymq/internal/logging"
 	"github.com/prajwalmahajan101/toymq/internal/metrics"
+	"github.com/prajwalmahajan101/toymq/internal/replication"
 	"github.com/prajwalmahajan101/toymq/internal/server"
 	"github.com/prajwalmahajan101/toymq/internal/tracing"
 	"github.com/prajwalmahajan101/toymq/internal/wal"
+	"github.com/prajwalmahajan101/toyraft/pkg/raft"
+	filestorage "github.com/prajwalmahajan101/toyraft/pkg/storage/file"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -95,6 +98,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			logger.Error("broker close", "err", err)
 		}
 	}()
+
+	// Replication (v3 M1, ADR 0028). Off by default; -replicate attaches an
+	// embedded single-node raft so every mutating command flows
+	// Propose→Apply. Node.Stop must run before broker Close (the deferred
+	// b.Close above), so this defer — registered later — runs first.
+	if cfg.Replicate {
+		node, err := attachRaft(ctx, b, cfg, logger)
+		if err != nil {
+			return fmt.Errorf("replication: %w", err)
+		}
+		defer func() {
+			if err := node.Stop(); err != nil {
+				logger.Warn("raft stop", "err", err)
+			}
+		}()
+	}
 
 	// Handshake / auth / TLS options (ADR 0020), shared by both listeners.
 	serverOpts := []server.Option{server.WithRequireHello(cfg.RequireHello)}
@@ -196,6 +215,67 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	return nil
+}
+
+// attachRaft builds a single-node embedded raft, starts it, waits for it to
+// become leader, and switches the broker into replicated mode. M1 is
+// single-node: Peers is [self] (trivially leader) and the transport is a no-op
+// because neither shipped toyraft transport can express a self-only cluster
+// (see internal/replication/transport.go). M2 replaces this with real peers
+// over pkg/transport/http.
+func attachRaft(ctx context.Context, b *broker.Broker, cfg *config.Config, logger *slog.Logger) (raft.Node, error) {
+	raftDir := cfg.ResolvedRaftDir()
+	store, err := filestorage.New(raftDir)
+	if err != nil {
+		return nil, fmt.Errorf("open raft storage at %q: %w", raftDir, err)
+	}
+
+	sm := replication.NewBrokerSM(b)
+	node, err := raft.New(raft.Config{
+		NodeID:       raft.NodeID(cfg.NodeID),
+		Peers:        []raft.NodeID{raft.NodeID(cfg.NodeID)}, // [self]
+		Storage:      store,
+		Transport:    replication.NewSingleNodeTransport(),
+		StateMachine: sm,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build raft node: %w", err)
+	}
+	if err := node.Start(ctx); err != nil {
+		return nil, fmt.Errorf("start raft node: %w", err)
+	}
+
+	// A single-node cluster campaigns and wins within one election timeout.
+	// Block until leadership so the first PUB does not race a not-yet-leader
+	// node with ErrNotLeader.
+	if err := waitForLeader(ctx, node, 5*time.Second); err != nil {
+		_ = node.Stop()
+		return nil, err
+	}
+
+	b.AttachRaft(node, sm.Registry())
+	logger.Info("replication enabled", "node-id", cfg.NodeID, "raft-dir", raftDir)
+	return node, nil
+}
+
+// waitForLeader polls node.Status until it reports Leader or timeout elapses.
+func waitForLeader(ctx context.Context, node raft.Node, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if node.Status().Role == raft.Leader {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("raft node did not reach leader within %s", timeout)
+		case <-tick.C:
+		}
+	}
 }
 
 func buildLogger(w io.Writer, level, format string) *slog.Logger {
