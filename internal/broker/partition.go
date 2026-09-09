@@ -85,11 +85,38 @@ func rebuildIndexes(dedupe *DedupeIndex, rec wal.Record) {
 	}
 }
 
-// publishCtx appends payload to this partition's log. A non-empty
-// dedupeKey activates dedupe — a second call with the same key returns
-// the original MsgID and duplicate=true without a new WAL write. The
+// publishCtx is the standalone (non-replicated) publish path: it resolves the
+// non-deterministic values — the producer timestamp and, for a DELAYed PUB,
+// the absolute visible-at time — from the clock, then hands off to the
+// deterministic applyPublish. The replicated path (v3) skips this: the leader
+// resolves those same values into the command Envelope and every node's
+// StateMachine.Apply calls applyPublish directly, so both paths write
+// byte-identical WAL records. A non-empty dedupeKey activates dedupe. The
 // context carries any active OTel span; m may be nil.
 func (p *Partition) publishCtx(ctx context.Context, dedupeKey string, payload []byte, delayMs uint64, m *metrics.Metrics) (msgID uint64, duplicate bool, err error) {
+	now := time.Now().UnixNano()
+	// The proposer resolves the delay to an absolute visible-at time here,
+	// so it travels in the record and is Apply-deterministic in v3 — the
+	// same treatment as TsNs (ADR 0025 / ADR 0018). 0 = visible now.
+	var visibleAtNs uint64
+	if delayMs > 0 {
+		visibleAtNs = uint64(now) + delayMs*uint64(time.Millisecond)
+	}
+	// raftIndex 0: standalone records carry no applied-index marker and stay
+	// byte-identical to v2.
+	return p.applyPublish(ctx, uint64(now), visibleAtNs, 0, dedupeKey, payload, m)
+}
+
+// applyPublish is the deterministic tail of a publish: given the already-
+// resolved timestamp and visible-at time, it runs the dedupe check, appends
+// the WAL record (which assigns the MsgID), and updates the in-memory dedupe
+// index and metrics. It reads no wall-clock and does no routing, so running
+// the same arguments on every replica in StateMachine.Apply — in raft
+// log-index order — advances wal.Log.nextMsgID identically everywhere, making
+// the MsgID deterministic without a proposer-side reservation (ADR 0028; this
+// corrects the ADR 0018 note that MsgID must move to the proposer). A dedupe
+// hit early-returns the original MsgID with no WAL write. m may be nil.
+func (p *Partition) applyPublish(ctx context.Context, tsNs, visibleAtNs, raftIndex uint64, dedupeKey string, payload []byte, m *metrics.Metrics) (msgID uint64, duplicate bool, err error) {
 	p.pubMu.Lock()
 	defer p.pubMu.Unlock()
 
@@ -99,20 +126,12 @@ func (p *Partition) publishCtx(ctx context.Context, dedupeKey string, payload []
 		}
 	}
 
-	now := time.Now().UnixNano()
-	// The proposer resolves the delay to an absolute visible-at time here,
-	// so it travels in the record and is Apply-deterministic in v3 — the
-	// same treatment as TsNs (ADR 0025 / ADR 0018). 0 = visible now.
-	var visibleAtNs uint64
-	if delayMs > 0 {
-		visibleAtNs = uint64(now) + delayMs*uint64(time.Millisecond)
-	}
-
 	rec := wal.Record{
-		TsNs:        uint64(now),
+		TsNs:        tsNs,
 		DedupeKey:   dedupeKey,
 		Payload:     payload,
 		VisibleAtNs: visibleAtNs,
+		RaftIndex:   raftIndex,
 	}
 
 	start := time.Now()

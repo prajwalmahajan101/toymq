@@ -8,11 +8,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/metrics"
+	"github.com/prajwalmahajan101/toymq/internal/replication"
 	"github.com/prajwalmahajan101/toymq/internal/tracing"
 	"github.com/prajwalmahajan101/toymq/internal/wal"
+	"github.com/prajwalmahajan101/toyraft/pkg/raft"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -81,7 +84,135 @@ type Broker struct {
 	// branch-free.
 	metrics *metrics.Metrics
 	tracer  trace.Tracer
+
+	// raft is non-nil only in --replicate mode (v3 M1, ADR 0028). When set,
+	// each mutating method (PUB/ACK/NACK/CREATE) routes its command through
+	// Propose→StateMachine.Apply instead of mutating inline, so every cluster
+	// member applies it in the same log-index order. resultReg is the same
+	// registry the state machine resolves, letting a PUB handler read back
+	// the WAL-assigned MsgID that Propose discards. Both nil = standalone,
+	// byte-identical to v2.
+	raft      raft.Node
+	resultReg *replication.ResultRegistry
+
+	// appliedHighWater is the highest toyraft log index whose PUB is already
+	// durably recorded in a WAL (v3 M1, ADR 0028). It is computed during
+	// recovery from the RaftIndex stamped in each replicated record and lets
+	// ApplyPublish skip re-applying a PUB that raft replays on restart —
+	// toyraft has no persistent applied index and replays the whole committed
+	// log, so without this guard every replicated PUB would be written twice.
+	// 0 in standalone mode (records carry no RaftIndex) and on a fresh start.
+	appliedHighWater atomic.Uint64
 }
+
+// AttachRaft switches the broker into replicated mode. After this call every
+// mutating command is proposed through node and applied via the state machine
+// on every cluster member rather than mutating broker state inline. reg must be
+// the same registry the attached node's state machine resolves (obtain it from
+// replication.BrokerSM.Registry) so a PUB handler can recover its MsgID.
+// Called once at startup by cmd/toymq after raft.New — never mid-flight.
+func (b *Broker) AttachRaft(node raft.Node, reg *replication.ResultRegistry) {
+	b.raft = node
+	b.resultReg = reg
+}
+
+// proposePublish is the replicated publish path. It resolves the clock-derived
+// fields (leader-stamped, so Apply stays deterministic), registers a nonce,
+// Proposes the envelope, and — because Propose blocks until Apply has run on
+// this node — reads the WAL-assigned MsgID back from the result registry. On a
+// Propose error the entry never applied, so it Forgets the nonce to avoid a
+// leaked waiter.
+func (b *Broker) proposePublish(ctx context.Context, topic string, partition int, dedupeKey string, payload []byte, delayMs uint64) (msgID uint64, dup bool, err error) {
+	now := time.Now().UnixNano()
+	var visibleAtNs uint64
+	if delayMs > 0 {
+		visibleAtNs = uint64(now) + delayMs*uint64(time.Millisecond)
+	}
+	nonce, ch := b.resultReg.Register()
+	env := replication.Envelope{
+		Kind:        replication.KindPublish,
+		Nonce:       nonce,
+		Topic:       topic,
+		Partition:   int32(partition),
+		DedupeKey:   dedupeKey,
+		TsNs:        uint64(now),
+		VisibleAtNs: visibleAtNs,
+		Payload:     payload,
+	}
+	if _, _, err := b.raft.Propose(ctx, replication.Encode(env)); err != nil {
+		b.resultReg.Forget(nonce)
+		return 0, false, err
+	}
+	res := <-ch // guaranteed present: Propose returned only after Apply resolved it
+	return res.MsgID, res.Dup, nil
+}
+
+// proposeMutation Proposes a result-less command (ACK/NACK/CREATE) and returns
+// Propose's error. These carry Nonce 0 — the caller needs nothing back beyond
+// success, so no registry waiter is registered.
+func (b *Broker) proposeMutation(ctx context.Context, env replication.Envelope) error {
+	_, _, err := b.raft.Propose(ctx, replication.Encode(env))
+	return err
+}
+
+// The Apply* methods below satisfy replication.ApplySurface: the state machine
+// calls them from raft's single apply goroutine, in log-index order, on every
+// node. They are the deterministic mutations only — no routing, no clock, no
+// per-session delivery — so they produce byte-identical state everywhere.
+
+// ApplyPublish appends one already-resolved message to topic/partition,
+// stamping it with raftIndex so a restart can tell it apart from a replay.
+//
+// raftIndex <= appliedHighWater means this PUB was already durably written
+// before the crash and toyraft is merely replaying it: skip the append (it
+// would duplicate the record) and return the state unchanged. The WAL recovery
+// has already restored this message and advanced nextMsgID, so nothing more is
+// needed. New commits (raftIndex > appliedHighWater) append normally.
+func (b *Broker) ApplyPublish(ctx context.Context, topic string, partition int, tsNs, visibleAtNs, raftIndex uint64, dedupeKey string, payload []byte) (uint64, bool, error) {
+	if raftIndex != 0 && raftIndex <= b.appliedHighWater.Load() {
+		return 0, false, nil
+	}
+	p, err := b.partitionAt(topic, partition)
+	if err != nil {
+		return 0, false, err
+	}
+	return p.applyPublish(ctx, tsNs, visibleAtNs, raftIndex, dedupeKey, payload, b.metrics)
+}
+
+// ApplyAck advances the consumer's durable offset.
+func (b *Broker) ApplyAck(topic string, partition int, consumerID string, msgID uint64) error {
+	return b.applyAck(topic, partition, consumerID, msgID)
+}
+
+// ApplyNack bumps attempts / dead-letters. The redelivery push is per-session
+// delivery, so it is dropped here (the leader's redelivery ticker covers it).
+func (b *Broker) ApplyNack(ctx context.Context, topic string, partition int, consumerID string, msgID uint64) error {
+	_, err := b.applyNack(ctx, topic, partition, consumerID, msgID)
+	return err
+}
+
+// ApplyCreateTopic opens a topic at an exact partition count (idempotent on
+// replay). It calls the inline creator directly, never the branching
+// CreateTopic, so Apply cannot recurse back into Propose.
+func (b *Broker) ApplyCreateTopic(topic string, partitions int) error {
+	return b.createTopicLocal(topic, partitions)
+}
+
+// advanceAppliedHighWater raises appliedHighWater to idx if idx is larger.
+// Called from the recovery visitor (single-threaded at New) for every
+// recovered record; a compare-and-swap loop keeps it correct even if recovery
+// ever parallelises across partitions.
+func (b *Broker) advanceAppliedHighWater(idx uint64) {
+	for {
+		cur := b.appliedHighWater.Load()
+		if idx <= cur || b.appliedHighWater.CompareAndSwap(cur, idx) {
+			return
+		}
+	}
+}
+
+// Compile-time assertion that *Broker satisfies the state machine's surface.
+var _ replication.ApplySurface = (*Broker)(nil)
 
 // SyncConfig is the WAL durability strategy the broker applies when it
 // opens each topic's log. Mode's zero value (wal.SyncPerMessage)
@@ -290,6 +421,23 @@ func (b *Broker) CreateTopic(name string, partitions int) error {
 	if partitions < 1 {
 		return fmt.Errorf("create topic %q: partitions must be >= 1, got %d", name, partitions)
 	}
+	if b.raft != nil {
+		// CreateTopic has no request ctx of its own; the command carries no
+		// clock, so context.Background is fine as the Propose deadline
+		// boundary. Nonce 0 — the caller needs no result beyond the error.
+		return b.proposeMutation(context.Background(), replication.Envelope{
+			Kind: replication.KindCreateTopic, Topic: name, Partitions: int32(partitions),
+		})
+	}
+	return b.createTopicLocal(name, partitions)
+}
+
+// createTopicLocal is the deterministic inline topic creation shared by the
+// standalone CreateTopic branch and ApplyCreateTopic. It must never route
+// through Propose (ApplyCreateTopic calls it from inside Apply — branching on
+// b.raft here would re-propose forever). Idempotent: an existing topic at the
+// same count returns nil, a different count errors.
+func (b *Broker) createTopicLocal(name string, partitions int) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if t, ok := b.topics[name]; ok {
@@ -368,6 +516,12 @@ func (b *Broker) openPartition(topic string, id int, dir string) (*Partition, er
 		wal.WithSegmentBytes(b.retention.SegmentBytes),
 		wal.WithRecoveryVisitor(func(rec wal.Record) {
 			rebuildIndexes(dedupe, rec)
+			// Track the highest applied raft index across all partitions so
+			// ApplyPublish can skip PUBs that toyraft replays on restart (ADR
+			// 0028). Records apply in strict index order under per-message (or
+			// batch-ordered) fsync, so the global max is a safe prefix
+			// high-water. Zero on standalone records.
+			b.advanceAppliedHighWater(rec.RaftIndex)
 		}))
 	if err != nil {
 		return nil, fmt.Errorf("open wal for topic %q partition %d: %w", topic, id, err)
@@ -429,12 +583,22 @@ func (b *Broker) PublishCtx(ctx context.Context, topic, dedupeKey, routingKey st
 		b.metrics.IncPublishFailure(topic)
 		return 0, 0, false, err
 	}
+	// Routing (partition selection, incl. the keyless round-robin) is stateful
+	// and non-deterministic, so the leader resolves it once here, before
+	// Propose — the chosen partition then travels in the envelope and every
+	// replica applies to the same one (ADR 0028).
 	p, err := t.route(partition, partitionSet, routingKey)
 	if err != nil {
 		b.metrics.IncPublishFailure(topic)
 		return 0, 0, false, err
 	}
-	id, dup, err := p.publishCtx(ctx, dedupeKey, payload, delayMs, b.metrics)
+	var id uint64
+	var dup bool
+	if b.raft == nil {
+		id, dup, err = p.publishCtx(ctx, dedupeKey, payload, delayMs, b.metrics)
+	} else {
+		id, dup, err = b.proposePublish(ctx, topic, p.id, dedupeKey, payload, delayMs)
+	}
 	if err == nil {
 		span.SetAttributes(tracing.AttrDuplicate.Bool(dup))
 		if dup {
@@ -564,6 +728,22 @@ func (b *Broker) AckCtx(ctx context.Context, topic string, partition int, consum
 	)
 	defer span.End()
 
+	if b.raft == nil {
+		return b.applyAck(topic, partition, consumerID, msgID)
+	}
+	return b.proposeMutation(ctx, replication.Envelope{
+		Kind: replication.KindAck, Topic: topic, Partition: int32(partition),
+		ConsumerID: consumerID, MsgID: msgID,
+	})
+}
+
+// applyAck is the deterministic state mutation of an ACK: it advances the
+// consumer's durable offset (c.Ack) and refreshes the inflight/lag gauges.
+// It reads no wall-clock and does no per-session delivery work, so it runs
+// identically inline (standalone) and inside StateMachine.Apply on every node
+// (ADR 0028). The consumer offset is failover-visible state, so ACK is a
+// replicated command (spec §Command classification).
+func (b *Broker) applyAck(topic string, partition int, consumerID string, msgID uint64) error {
 	p, err := b.partitionAt(topic, partition)
 	if err != nil {
 		return err
@@ -600,14 +780,54 @@ func (b *Broker) NackCtx(ctx context.Context, topic string, partition int, consu
 	)
 	defer span.End()
 
-	p, err := b.partitionAt(topic, partition)
+	if b.raft != nil {
+		// Replicated NACK carries only the state mutation (attempts / DLQ);
+		// the immediate redelivery push is per-session and does not run here.
+		// The redelivery ticker re-pushes the still-inflight message (spec
+		// §Command classification; ponytail: no cross-node inflight handle in
+		// M1, ticker is the backstop).
+		return b.proposeMutation(ctx, replication.Envelope{
+			Kind: replication.KindNack, Topic: topic, Partition: int32(partition),
+			ConsumerID: consumerID, MsgID: msgID,
+		})
+	}
+
+	redeliver, err := b.applyNack(ctx, topic, partition, consumerID, msgID)
 	if err != nil {
 		return err
+	}
+	// The redelivery push is per-session delivery, not replicated state: only
+	// the leader that holds this consumer's connection pushes it. On a
+	// follower (or replay) applyNack returns the same attempts/DLQ state
+	// mutation but its redeliver is dropped here (spec §Command
+	// classification). Non-blocking — the redelivery ticker covers a full
+	// channel.
+	if redeliver != nil {
+		select {
+		case sendCh <- redeliver:
+		default:
+		}
+	}
+	return nil
+}
+
+// applyNack is the deterministic state mutation of a NACK: it bumps the
+// message's attempts and, once the DLQ threshold is crossed, synthetically
+// acks it out of inflight and appends it to <topic>.dlq. Both are
+// failover-visible state, so they run on every node inside
+// StateMachine.Apply (ADR 0028). It returns the Inflight to redeliver
+// (nil when the message was dead-lettered instead); the caller decides
+// whether to push it — that push is local per-session delivery, never
+// replicated.
+func (b *Broker) applyNack(ctx context.Context, topic string, partition int, consumerID string, msgID uint64) (redeliver *Inflight, err error) {
+	p, err := b.partitionAt(topic, partition)
+	if err != nil {
+		return nil, err
 	}
 	c := p.getOrCreateConsumer(consumerID)
 	redeliver, killed, err := c.nackOrKill(msgID, b.dlqThreshold(topic))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	b.metrics.IncNack(topic, partition)
 	if killed != nil {
@@ -619,16 +839,11 @@ func (b *Broker) NackCtx(ctx context.Context, topic string, partition int, consu
 		// out of the source inflight; a failed append to <topic>.dlq is
 		// logged inside dlqMove, not surfaced to the client's NACK.
 		_ = b.dlqMoveCtx(ctx, topic, killed.Payload)
-	} else {
-		select {
-		case sendCh <- redeliver:
-		default:
-			// channel full — the redelivery ticker covers this path.
-		}
+		redeliver = nil
 	}
 	c.mu.Lock()
 	n := len(c.inflight)
 	c.mu.Unlock()
 	b.metrics.SetInflight(topic, consumerID, n)
-	return nil
+	return redeliver, nil
 }
