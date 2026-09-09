@@ -41,6 +41,17 @@ type Record struct {
 	// payload: records written before M6 carry no trailing bytes and
 	// decode to 0.
 	VisibleAtNs uint64
+
+	// RaftIndex is the toyraft log index of the entry that produced this
+	// record, stamped only on the replicated path (v3 M1, ADR 0028); it is
+	// the applied-state durability marker that makes restart replay
+	// idempotent — on recovery the broker skips re-applying any PUB whose
+	// RaftIndex is at or below the highest recovered value. It is an
+	// append-only 8-byte field written ONLY when non-zero: raft indices are
+	// 1-based, so a standalone record (RaftIndex 0) omits it entirely and
+	// stays byte-for-byte identical to v2. A replicated record carries both
+	// trailing 8-byte fields (VisibleAtNs then RaftIndex).
+	RaftIndex uint64
 }
 
 // Encode writes one framed Record to dst. Returns ErrTooLarge if the
@@ -74,6 +85,14 @@ func Encode(rec Record, dst *bytes.Buffer) error {
 	// records have none and decode to VisibleAtNs == 0.
 	binary.LittleEndian.PutUint64(scratch[:], rec.VisibleAtNs)
 	inner.Write(scratch[:])
+
+	// Append-only RaftIndex (ADR 0028): written ONLY when non-zero, after
+	// VisibleAtNs. Standalone records (RaftIndex 0) omit it and stay
+	// byte-identical to v2; replicated records carry a second 8-byte field.
+	if rec.RaftIndex != 0 {
+		binary.LittleEndian.PutUint64(scratch[:], rec.RaftIndex)
+		inner.Write(scratch[:])
+	}
 
 	if inner.Len()+4 > MaxRecordSize {
 		return ErrTooLarge
@@ -171,14 +190,21 @@ func Decode(r *bufio.Reader) (Record, int, error) {
 	rec.Payload = append([]byte(nil), inner[off:off+payloadLen]...)
 	off += payloadLen
 
-	// Append-only VisibleAtNs (ADR 0025): a pre-M6 record ends here (no
-	// trailing bytes → VisibleAtNs 0); an M6+ record carries exactly 8
-	// trailing bytes. Anything else is a malformed frame.
+	// Append-only trailing fields:
+	//   0 bytes  → pre-M6 record: VisibleAtNs 0, RaftIndex 0.
+	//   8 bytes  → M6+ standalone record: VisibleAtNs, RaftIndex 0 (ADR 0025).
+	//  16 bytes  → v3 replicated record: VisibleAtNs then RaftIndex (ADR 0028).
+	// Anything else is a malformed frame.
 	switch len(inner) - off {
 	case 0:
 		rec.VisibleAtNs = 0
+		rec.RaftIndex = 0
 	case 8:
 		rec.VisibleAtNs = binary.LittleEndian.Uint64(inner[off:])
+		rec.RaftIndex = 0
+	case 16:
+		rec.VisibleAtNs = binary.LittleEndian.Uint64(inner[off:])
+		rec.RaftIndex = binary.LittleEndian.Uint64(inner[off+8:])
 	default:
 		return Record{}, 0, ErrShortRead
 	}
