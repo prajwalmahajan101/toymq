@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/wal"
@@ -72,6 +73,15 @@ type Config struct {
 	OTLPEndpoint     string
 	TraceSampleRatio float64
 	ServiceVersion   string
+
+	// Replication (v3 M1, ADR 0028). Replicate routes every mutating command
+	// through raft Propose→Apply; false (default) is the standalone path,
+	// byte-identical to v2. NodeID is this node's raft identity. RaftDir is
+	// the raft log/state store; empty defaults to <data-dir>/raft. M1 is
+	// single-node only (Peers == [self]); multi-node peer wiring is M2.
+	Replicate bool
+	NodeID    string
+	RaftDir   string
 }
 
 // Default flag values exported so cmd binaries (toymqctl, toymq-bench,
@@ -92,6 +102,7 @@ const (
 	DefaultOTLPEndpoint      = ""
 	DefaultTraceSampleRatio  = 0.05
 	DefaultServiceVersion    = "dev"
+	DefaultNodeID            = "n1"
 )
 
 var (
@@ -130,6 +141,9 @@ func Parse(args []string, stderr io.Writer) (*Config, error) {
 	fs.StringVar(&cfg.OTLPEndpoint, "otlp-endpoint", DefaultOTLPEndpoint, "OTLP gRPC tracing endpoint (empty disables tracing)")
 	fs.Float64Var(&cfg.TraceSampleRatio, "trace-sample-ratio", DefaultTraceSampleRatio, "fraction of root spans to sample [0..1]")
 	fs.StringVar(&cfg.ServiceVersion, "service-version", DefaultServiceVersion, "value reported as otel.service.version")
+	fs.BoolVar(&cfg.Replicate, "replicate", false, "route mutating commands through embedded raft (v3 M1, single-node); false = standalone")
+	fs.StringVar(&cfg.NodeID, "node-id", DefaultNodeID, "raft node identity for -replicate")
+	fs.StringVar(&cfg.RaftDir, "raft-dir", "", "raft log/state directory for -replicate; empty defaults to <data-dir>/raft")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -196,5 +210,17 @@ func (c *Config) validate() error {
 	if c.TLSAddr != "" && c.TLSCert == "" {
 		return errors.New("tls-addr requires tls-cert and tls-key")
 	}
+	if c.Replicate && c.NodeID == "" {
+		return errors.New("node-id must not be empty with -replicate")
+	}
 	return nil
+}
+
+// ResolvedRaftDir returns the raft store directory: RaftDir when set, else
+// <data-dir>/raft. Only meaningful under -replicate.
+func (c *Config) ResolvedRaftDir() string {
+	if c.RaftDir != "" {
+		return c.RaftDir
+	}
+	return filepath.Join(c.DataDir, "raft")
 }
