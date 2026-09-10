@@ -39,7 +39,7 @@ func attachSingleNodeRaft(t *testing.T, b *Broker, dir string) raft.Node {
 	}
 	t.Cleanup(func() { _ = node.Stop() })
 
-	b.AttachRaft(node, sm.Registry())
+	b.AttachRaft(node)
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -114,11 +114,11 @@ func TestReplicatedPublishDedupe(t *testing.T) {
 // The RaftIndex stamped in each record makes that replay a no-op: a message
 // published before the restart must survive exactly once, never doubled.
 //
-// It asserts the RECOVERED state, not a post-restart publish: toyraft rc.2 does
-// not restore its in-memory log from Storage on New (log starts empty, so
-// LastIndex()==0 while commitIndex is recovered), which drops any new proposal
-// after restart. That is a separate upstream blocker tracked in the migration
-// report; here we verify only that replay does not duplicate.
+// toyraft rc.3 restores the in-memory log from Storage on New (B1), so a
+// restarted node is writable again, and the RaftIndex guard (ADR 0028 §5) keeps
+// the replay of the committed log a no-op. So a post-restart publish must
+// succeed AND continue from the correct MsgID — the full crash-durability
+// criterion that was blocked on rc.2.
 func TestReplicatedRestartRecovery(t *testing.T) {
 	dir := t.TempDir()
 	b, err := NewWithTimings(dir, 16, 100*time.Millisecond, 20*time.Millisecond)
@@ -139,32 +139,28 @@ func TestReplicatedRestartRecovery(t *testing.T) {
 	}
 
 	// Restart: reopen the broker (recovers its WAL + the applied high-water)
-	// and re-attach raft, which replays the 3 committed entries through Apply.
+	// and re-attach raft, which restores its log (B1) and replays the 3
+	// committed entries through Apply (skipped by the RaftIndex guard).
 	b2, err := NewWithTimings(dir, 16, 100*time.Millisecond, 20*time.Millisecond)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
 	t.Cleanup(func() { _ = b2.Close() })
-	node2 := attachSingleNodeRaft(t, b2, dir)
+	attachSingleNodeRaft(t, b2, dir)
 
-	// Wait for replay to drain (ApplyIndex catches up to the recovered
-	// commitIndex), then assert no message was re-appended.
-	deadline := time.Now().Add(2 * time.Second)
-	for node2.Status().ApplyIndex < 3 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := node2.Status().ApplyIndex; got < 3 {
-		t.Fatalf("replay did not drain: ApplyIndex=%d, want >=3", got)
-	}
-
-	p, err := b2.partitionAt("orders", 0)
+	// The node is writable after restart (B1). A fresh publish must get MsgID
+	// 3 — proving replay wrote nothing extra (double-apply would push it past
+	// 3) and the node accepts new writes (rc.2 dropped them). Propose blocks
+	// until applied, so no wait for replay drain is needed.
+	id, _, dup, err := b2.Publish("orders", "", "", 0, false, []byte("after-restart"))
 	if err != nil {
-		t.Fatalf("partitionAt: %v", err)
+		t.Fatalf("post-restart Publish: %v", err)
 	}
-	// Three messages published → MsgIDs 0,1,2 → head 2. A double-apply would
-	// have re-appended them as 3,4,5 and head would be 5.
-	if head := p.head(); head != 2 {
-		t.Fatalf("partition head after replay = %d, want 2 (double-apply would give 5)", head)
+	if dup {
+		t.Fatal("post-restart Publish unexpectedly deduped")
+	}
+	if id != 3 {
+		t.Fatalf("post-restart MsgID = %d, want 3 (double-apply would exceed 3)", id)
 	}
 }
 

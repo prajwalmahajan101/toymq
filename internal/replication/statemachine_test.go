@@ -41,21 +41,17 @@ func entryOf(env Envelope) raft.Entry {
 	return raft.Entry{Index: 1, Term: 1, Data: Encode(env)}
 }
 
-func TestApplyPublishResolvesNonce(t *testing.T) {
+func TestApplyPublishReturnsResult(t *testing.T) {
 	f := &fakeBroker{nextID: 42, nextDup: true}
 	sm := NewBrokerSM(f)
-	nonce, ch := sm.Registry().Register()
 
-	res, err := sm.Apply(entryOf(Envelope{Kind: KindPublish, Nonce: nonce, Topic: "orders", Partition: 2}))
+	// Apply's return value is what toyraft rc.3 hands back through Propose.
+	res, err := sm.Apply(entryOf(Envelope{Kind: KindPublish, Topic: "orders", Partition: 2}))
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if got := res.(ApplyResult); got.MsgID != 42 || !got.Dup {
 		t.Fatalf("Apply result = %+v, want {42 true}", got)
-	}
-	got := <-ch
-	if got.MsgID != 42 || !got.Dup {
-		t.Fatalf("registry result = %+v, want {42 true}", got)
 	}
 	if len(f.calls) != 1 || f.calls[0] != "publish:orders" {
 		t.Fatalf("calls = %v, want [publish:orders]", f.calls)
@@ -65,15 +61,18 @@ func TestApplyPublishResolvesNonce(t *testing.T) {
 func TestApplyDispatchesEachKind(t *testing.T) {
 	f := &fakeBroker{}
 	sm := NewBrokerSM(f)
-	// Nonce 0 = no waiter: resolve must be a harmless no-op for the
-	// result-less commands.
+	// The result-less commands return a nil Apply result.
 	for _, env := range []Envelope{
 		{Kind: KindAck, Topic: "t", ConsumerID: "c", MsgID: 1},
 		{Kind: KindNack, Topic: "t", ConsumerID: "c", MsgID: 2},
 		{Kind: KindCreateTopic, Topic: "t", Partitions: 4},
 	} {
-		if _, err := sm.Apply(entryOf(env)); err != nil {
+		res, err := sm.Apply(entryOf(env))
+		if err != nil {
 			t.Fatalf("Apply(%v): %v", env.Kind, err)
+		}
+		if res != nil {
+			t.Fatalf("Apply(%v) result = %v, want nil", env.Kind, res)
 		}
 	}
 	want := []string{"ack:t", "nack:t", "create:t"}
@@ -82,22 +81,17 @@ func TestApplyDispatchesEachKind(t *testing.T) {
 	}
 }
 
-func TestApplyBrokerErrorLeavesNonceUnresolved(t *testing.T) {
+func TestApplyReturnsBrokerError(t *testing.T) {
 	sentinel := errors.New("wal append failed")
 	f := &fakeBroker{err: sentinel}
 	sm := NewBrokerSM(f)
-	nonce, ch := sm.Registry().Register()
 
-	_, err := sm.Apply(entryOf(Envelope{Kind: KindPublish, Nonce: nonce, Topic: "orders"}))
+	res, err := sm.Apply(entryOf(Envelope{Kind: KindPublish, Topic: "orders"}))
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want sentinel", err)
 	}
-	// The nonce must NOT be resolved — the handler cleans it up via Forget on
-	// the Propose error path.
-	select {
-	case v := <-ch:
-		t.Fatalf("nonce was resolved with %+v on error, want unresolved", v)
-	default:
+	if res != nil {
+		t.Fatalf("result = %v on error, want nil", res)
 	}
 }
 

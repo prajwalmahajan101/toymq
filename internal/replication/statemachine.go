@@ -33,39 +33,40 @@ type ApplySurface interface {
 	ApplyCreateTopic(topic string, partitions int) error
 }
 
+// ApplyResult is what a PUB's StateMachine.Apply returns: the WAL-assigned
+// MsgID and whether the write was a dedupe hit. toyraft rc.3 delivers it as
+// raft.Node.Propose's result, so the proposing leader reads the MsgID back
+// directly (ADR 0029). ACK/NACK/CREATE need nothing back and their Apply
+// returns nil.
+type ApplyResult struct {
+	MsgID uint64
+	Dup   bool
+}
+
 // BrokerSM adapts the broker to raft.StateMachine. Apply decodes the Envelope
 // in each committed entry, dispatches to the matching deterministic broker
-// mutation, and resolves the command's result registry nonce so the proposing
-// leader's handler can read back a PUB's MsgID (raft.Node.Propose discards
-// Apply's result — see registry.go).
+// mutation, and returns a PUB's ApplyResult — toyraft rc.3 delivers Apply's
+// return value as raft.Node.Propose's result, so the proposing leader reads the
+// WAL-assigned MsgID straight back from Propose (ADR 0029).
 type BrokerSM struct {
 	broker ApplySurface
-	reg    *ResultRegistry
 }
 
-// NewBrokerSM wraps b in a state machine with a fresh result registry. Pass the
-// same registry (via Registry) to the broker's AttachRaft so the leader handler
-// and Apply share it.
+// NewBrokerSM wraps b in a state machine.
 func NewBrokerSM(b ApplySurface) *BrokerSM {
-	return &BrokerSM{broker: b, reg: NewResultRegistry()}
-}
-
-// Registry returns the SM's result registry so the broker can register waiters
-// on the same instance Apply resolves.
-func (sm *BrokerSM) Registry() *ResultRegistry {
-	return sm.reg
+	return &BrokerSM{broker: b}
 }
 
 // Apply runs one committed command. It is called from toyraft's single apply
 // goroutine, in strict index order, so the mutations it drives are serialized
-// and deterministic (raft.StateMachine contract).
+// and deterministic (raft.StateMachine contract). Its return value is delivered
+// to the proposing Propose caller (nil for the result-less commands).
 //
 // A decode failure panics: the replicated log is the source of truth, so an
 // undecodable entry is unrecoverable corruption, not a per-command reject
 // (toyraft recovers the panic into node fatal-status and unblocks Propose with
 // the error). A broker mutation error is returned instead — toyraft delivers it
-// to the proposing Propose caller without poisoning the node — and the nonce is
-// left unresolved; the handler cleans it up via Forget on the Propose error.
+// to the proposing Propose caller without poisoning the node.
 func (sm *BrokerSM) Apply(entry raft.Entry) (any, error) {
 	env, err := Decode(entry.Data)
 	if err != nil {
@@ -82,29 +83,24 @@ func (sm *BrokerSM) Apply(entry raft.Entry) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		res := ApplyResult{MsgID: id, Dup: dup}
-		sm.reg.resolve(env.Nonce, res)
-		return res, nil
+		return ApplyResult{MsgID: id, Dup: dup}, nil
 
 	case KindAck:
 		if err := sm.broker.ApplyAck(env.Topic, int(env.Partition), env.ConsumerID, env.MsgID); err != nil {
 			return nil, err
 		}
-		sm.reg.resolve(env.Nonce, ApplyResult{})
 		return nil, nil
 
 	case KindNack:
 		if err := sm.broker.ApplyNack(ctx, env.Topic, int(env.Partition), env.ConsumerID, env.MsgID); err != nil {
 			return nil, err
 		}
-		sm.reg.resolve(env.Nonce, ApplyResult{})
 		return nil, nil
 
 	case KindCreateTopic:
 		if err := sm.broker.ApplyCreateTopic(env.Topic, int(env.Partitions)); err != nil {
 			return nil, err
 		}
-		sm.reg.resolve(env.Nonce, ApplyResult{})
 		return nil, nil
 
 	default:

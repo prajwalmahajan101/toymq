@@ -85,15 +85,13 @@ type Broker struct {
 	metrics *metrics.Metrics
 	tracer  trace.Tracer
 
-	// raft is non-nil only in --replicate mode (v3 M1, ADR 0028). When set,
-	// each mutating method (PUB/ACK/NACK/CREATE) routes its command through
-	// Propose→StateMachine.Apply instead of mutating inline, so every cluster
-	// member applies it in the same log-index order. resultReg is the same
-	// registry the state machine resolves, letting a PUB handler read back
-	// the WAL-assigned MsgID that Propose discards. Both nil = standalone,
+	// raft is non-nil only in --replicate mode (v3 M1, ADR 0028/0029). When
+	// set, each mutating method (PUB/ACK/NACK/CREATE) routes its command
+	// through Propose→StateMachine.Apply instead of mutating inline, so every
+	// cluster member applies it in the same log-index order; a PUB reads its
+	// WAL-assigned MsgID back from Propose's result. nil = standalone,
 	// byte-identical to v2.
-	raft      raft.Node
-	resultReg *replication.ResultRegistry
+	raft raft.Node
 
 	// appliedHighWater is the highest toyraft log index whose PUB is already
 	// durably recorded in a WAL (v3 M1, ADR 0028). It is computed during
@@ -107,31 +105,25 @@ type Broker struct {
 
 // AttachRaft switches the broker into replicated mode. After this call every
 // mutating command is proposed through node and applied via the state machine
-// on every cluster member rather than mutating broker state inline. reg must be
-// the same registry the attached node's state machine resolves (obtain it from
-// replication.BrokerSM.Registry) so a PUB handler can recover its MsgID.
-// Called once at startup by cmd/toymq after raft.New — never mid-flight.
-func (b *Broker) AttachRaft(node raft.Node, reg *replication.ResultRegistry) {
+// on every cluster member rather than mutating broker state inline. Called once
+// at startup by cmd/toymq after raft.New — never mid-flight.
+func (b *Broker) AttachRaft(node raft.Node) {
 	b.raft = node
-	b.resultReg = reg
 }
 
 // proposePublish is the replicated publish path. It resolves the clock-derived
-// fields (leader-stamped, so Apply stays deterministic), registers a nonce,
-// Proposes the envelope, and — because Propose blocks until Apply has run on
-// this node — reads the WAL-assigned MsgID back from the result registry. On a
-// Propose error the entry never applied, so it Forgets the nonce to avoid a
-// leaked waiter.
+// fields (leader-stamped, so Apply stays deterministic), Proposes the envelope,
+// and reads the WAL-assigned MsgID back from Propose's result — toyraft rc.3
+// returns StateMachine.Apply's value as Propose's third return, and Propose
+// blocks until Apply has run on this node (ADR 0029).
 func (b *Broker) proposePublish(ctx context.Context, topic string, partition int, dedupeKey string, payload []byte, delayMs uint64) (msgID uint64, dup bool, err error) {
 	now := time.Now().UnixNano()
 	var visibleAtNs uint64
 	if delayMs > 0 {
 		visibleAtNs = uint64(now) + delayMs*uint64(time.Millisecond)
 	}
-	nonce, ch := b.resultReg.Register()
 	env := replication.Envelope{
 		Kind:        replication.KindPublish,
-		Nonce:       nonce,
 		Topic:       topic,
 		Partition:   int32(partition),
 		DedupeKey:   dedupeKey,
@@ -139,19 +131,20 @@ func (b *Broker) proposePublish(ctx context.Context, topic string, partition int
 		VisibleAtNs: visibleAtNs,
 		Payload:     payload,
 	}
-	if _, _, err := b.raft.Propose(ctx, replication.Encode(env)); err != nil {
-		b.resultReg.Forget(nonce)
+	_, _, res, err := b.raft.Propose(ctx, replication.Encode(env))
+	if err != nil {
 		return 0, false, err
 	}
-	res := <-ch // guaranteed present: Propose returned only after Apply resolved it
-	return res.MsgID, res.Dup, nil
+	// KindPublish's Apply returns an ApplyResult; ACK/NACK/CREATE return nil
+	// (see proposeMutation), so only the publish path asserts.
+	ar := res.(replication.ApplyResult)
+	return ar.MsgID, ar.Dup, nil
 }
 
 // proposeMutation Proposes a result-less command (ACK/NACK/CREATE) and returns
-// Propose's error. These carry Nonce 0 — the caller needs nothing back beyond
-// success, so no registry waiter is registered.
+// Propose's error. Their Apply returns nil, so the Propose result is discarded.
 func (b *Broker) proposeMutation(ctx context.Context, env replication.Envelope) error {
-	_, _, err := b.raft.Propose(ctx, replication.Encode(env))
+	_, _, _, err := b.raft.Propose(ctx, replication.Encode(env))
 	return err
 }
 

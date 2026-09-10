@@ -59,7 +59,6 @@ var (
 // schema stays fixed for simplicity rather than per-kind-packed.
 type Envelope struct {
 	Kind        Kind
-	Nonce       uint64 // leader-assigned; keys the result registry (0 = no waiter)
 	Topic       string
 	Partition   int32 // leader-resolved (replaces Topic.rr non-determinism)
 	DedupeKey   string
@@ -94,7 +93,6 @@ func Encode(env Envelope) []byte {
 		b = append(b, s...)
 	}
 
-	putU64(env.Nonce)
 	putStr(env.Topic)
 	putU32(uint32(env.Partition))
 	putStr(env.DedupeKey)
@@ -117,11 +115,11 @@ func Decode(data []byte) (Envelope, error) {
 	if len(data) > maxEnvelopeSize {
 		return Envelope{}, ErrTooLarge
 	}
-	// version(1) + kind(1) + nonce(8) + topicLen(4) + partition(4) +
-	// dedupeLen(4) + tsNs(8) + visibleAt(8) + consumerLen(4) + msgID(8) +
-	// payloadLen(4) + partitions(4) = 58 bytes of fixed framing minimum
-	// (all three strings and the payload empty).
-	if len(data) < 58 {
+	// version(1) + kind(1) + topicLen(4) + partition(4) + dedupeLen(4) +
+	// tsNs(8) + visibleAt(8) + consumerLen(4) + msgID(8) + payloadLen(4) +
+	// partitions(4) = 50 bytes of fixed framing minimum (all three strings
+	// and the payload empty).
+	if len(data) < 50 {
 		return Envelope{}, ErrShortRead
 	}
 
@@ -177,9 +175,6 @@ func Decode(data []byte) (Envelope, error) {
 
 	var ok bool
 	var p uint32
-	if env.Nonce, ok = u64(); !ok {
-		return Envelope{}, ErrShortRead
-	}
 	if env.Topic, ok = str(); !ok {
 		return Envelope{}, ErrShortRead
 	}
