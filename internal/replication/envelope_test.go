@@ -12,20 +12,20 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 		env  Envelope
 	}{
 		{"publish", Envelope{
-			Kind: KindPublish, Nonce: 42, Topic: "orders", Partition: 3,
+			Kind: KindPublish, Topic: "orders", Partition: 3,
 			DedupeKey: "dk-1", TsNs: 1_700_000_000_000_000_000,
 			VisibleAtNs: 1_700_000_005_000_000_000, Payload: []byte("hello world"),
 		}},
 		{"ack", Envelope{
-			Kind: KindAck, Nonce: 7, Topic: "orders", Partition: 0,
+			Kind: KindAck, Topic: "orders", Partition: 0,
 			ConsumerID: "c-9", MsgID: 128,
 		}},
 		{"nack", Envelope{
-			Kind: KindNack, Nonce: 8, Topic: "orders", Partition: 1,
+			Kind: KindNack, Topic: "orders", Partition: 1,
 			ConsumerID: "c-9", MsgID: 129,
 		}},
 		{"create", Envelope{
-			Kind: KindCreateTopic, Nonce: 0, Topic: "events", Partitions: 8,
+			Kind: KindCreateTopic, Topic: "events", Partitions: 8,
 		}},
 		{"empty-strings-nil-payload", Envelope{Kind: KindPublish}},
 		{"zero-len-payload", Envelope{Kind: KindPublish, Payload: []byte{}}},
@@ -88,9 +88,9 @@ func TestDecodeRejectsOverlongLengthPrefix(t *testing.T) {
 	// A topic length field claiming more bytes than the buffer holds must be
 	// ErrShortRead, not an out-of-range slice panic.
 	b := Encode(Envelope{Kind: KindPublish, Topic: "orders"})
-	// Topic length prefix sits at: version(1)+kind(1)+nonce(8) = offset 10.
-	b[10] = 0xff
-	b[11] = 0xff
+	// Topic length prefix sits at: version(1)+kind(1) = offset 2.
+	b[2] = 0xff
+	b[3] = 0xff
 	if _, err := Decode(b); err != ErrShortRead {
 		t.Fatalf("err = %v, want ErrShortRead", err)
 	}
