@@ -40,6 +40,7 @@
 | 0026 | [TRACEPARENT wire propagation](./0026-traceparent-wire-propagation.md) | Accepted |
 | 0027 | [Correlated telemetry (logs ↔ traces ↔ metrics)](./0027-correlated-telemetry.md) | Accepted |
 | 0028 | [Raft embedding, command envelope & the WAL↔Raft-log invariant](./0028-raft-embedding-command-envelope.md) | Accepted |
+| 0029 | [toyraft rc.3 bump: Propose returns the apply result; nonce registry removed](./0029-toyraft-rc3-propose-result.md) | Accepted |
 
 Each ADR is a short snapshot of *why* a decision was made, captured at the
 time the decision landed in code. They are not living docs — when a decision

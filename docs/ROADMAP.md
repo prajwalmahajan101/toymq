@@ -11,7 +11,7 @@ Branch off `main`; merge via PR; **no direct commits to `main`**.
 ```
 v1.x  (shipped) ──► v2.0.0  "Useful"  ──► v3.0.0  "Distributed (toyraft)"
    broker + WAL +      AUTH/TLS, batched-       Raft replication (embed
-   client + TUI +      fsync, dedupe persist,   toyraft rc.2), quorum acks,
+   client + TUI +      fsync, dedupe persist,   toyraft rc.3), quorum acks,
    observability       partitions, DLQ          client routing, cluster TUI
 ```
 
@@ -306,14 +306,14 @@ telemetry** story, so the milestone split: **M7** owns the code + wire
 
 This is where toymq earns the original distributed-broker framing. It embeds
 [`github.com/prajwalmahajan101/toyraft`](https://github.com/prajwalmahajan101/toyraft)
-(`v1.0.0-rc.2`) as a vendored consensus library. Standalone mode stays
+(`v1.0.0-rc.3`) as a vendored consensus library. Standalone mode stays
 byte-identical to v2; `--replicate` opts into a Raft-backed cluster. Same
 execution discipline as v1/v2 — branch off `main`, merge via PR, **no direct
 commits to `main`** — and the same governing principle: **the highest-blast-radius
 surface ships and is crash/linearizability-tested earliest, and each milestone
 owns its own risk test.**
 
-> **`tinyraft` → `toyraft` (`v1.0.0-rc.2`).** The library is real: `raft.New(Config)`
+> **`tinyraft` → `toyraft` (`v1.0.0-rc.3`).** The library is real: `raft.New(Config)`
 > behind a **frozen** public API (`pkg/raft.Node` — `Start`/`Stop`/`Propose`/`Step`/
 > `Status`/`LeaderHint`; `StateMachine`; `Storage`; `Transport`), a production
 > durable log (`pkg/storage/file`), a production HTTP peer transport
@@ -325,10 +325,10 @@ owns its own risk test.**
 > **replication only** — partition placement, cluster membership, follower reads,
 > mirror maker, and push frames are deferred to [v4.0](#v40--deferred-not-committed).
 > The narrowing keeps the release focused on the actual toyraft payoff, and — by
-> design — **keeps every committed milestone buildable on toyraft `rc.2` as it
+> design — **keeps every committed milestone buildable on toyraft `rc.3` as it
 > stands today**, with no upstream-blocked (`⛔`) milestone in scope.
 
-> **Mutual unblock (the dogfood gate).** toyraft is at `v1.0.0-rc.2` with a frozen
+> **Mutual unblock (the dogfood gate).** toyraft is at `v1.0.0-rc.3` with a frozen
 > public API; its own roadmap gates the `v1.0.0` tag on a **real consumer embedding
 > it**. toymq's running cluster **is** that gate. So v3 M1–M6 and toyraft `v1.0.0`
 > unlock each other — and v3 M6 ships a **migration / dogfooding report**
@@ -346,7 +346,7 @@ owns its own risk test.**
 > 3. **Write routing — client-driven redirect.** A follower returns a
 >    `MOVED <leader-addr>` error; `pkg/client` (CLI **and** TUI) retries against
 >    the hint with bounded backoff.
-> 4. **Compaction — ship on `rc.2` with an unbounded Raft log.**
+> 4. **Compaction — ship on `rc.3` with an unbounded Raft log.**
 >    `StateMachine.Snapshot/Restore` are *structured* now (broker-state
 >    serialization built + tested via the ADR 0018 `rebuildIndexes` seam) but
 >    stubbed `ErrSnapshotUnsupported` per the `v1` contract, so real compaction
@@ -382,12 +382,12 @@ Numbering continues toymq's `v3 M#` convention (**v3 M1–M6**); the release tag
 ## toyraft readiness — the three upstream capabilities (now v4 unblockers)
 
 An integration-readiness audit of `toyraft` (originally 2026-07-04, re-confirmed
-against `rc.2`) found the Raft **engine embeddable today**, with three
+against `rc.3`) found the Raft **engine embeddable today**, with three
 capabilities **stubbed or absent** upstream. The v3.0 replication-only cut is
 scoped **precisely to avoid all three**, so none blocks a committed v3.0
 milestone — each instead gates a [v4.0](#v40--deferred-not-committed) item:
 
-| toyraft capability | State in `rc.2` | Gates (v4) |
+| toyraft capability | State in `rc.3` | Gates (v4) |
 |---|---|---|
 | **UP-1 — Snapshots / log compaction** | Stub — `Snapshot`/`Restore` return `ErrSnapshotUnsupported`; `FirstIndex()` hardcoded to `1`; no `InstallSnapshot`. Raft log grows unbounded (a toyraft PRD non-goal). `ErrCompacted` / `snapshotIndex+1` are reserved hooks, so landing it is **no API break**. | v4 — real compaction (bounds disk on long-running clusters). |
 | **UP-2 — Runtime membership changes** | Absent — no `AddNode`/`RemoveNode`/`ConfChange`; `Config.Peers` fixed at startup. | v4 — cluster membership + discovery. |
@@ -410,7 +410,7 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
 ## v3 M1 — Raft embedding + single-node replicated path *(the state-machine seam)*
 **Branch:** `feat/toyraft-embed` · **Depends on:** nothing new · **ADR:** 0018 (extend) — Raft embedding, command envelope & WAL↔Raft-log invariant
 *(The foundational, highest-blast-radius milestone — it owns the determinism + durability tests.)*
-- Import `github.com/prajwalmahajan101/toyraft@v1.0.0-rc.2`.
+- Import `github.com/prajwalmahajan101/toyraft@v1.0.0-rc.3`.
 - **Pick once, ADR it:** is the **Raft log** the durability source of truth (WAL
   becomes a local materialised view + snapshot device), or is **WAL** still
   authoritative and Raft just replicates entries? Default proposal (mirrors the
@@ -464,7 +464,7 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
   `ERR NOTLEADER <host:port>`). `pkg/client` (CLI **and** TUI) auto-retry against
   the hint with bounded backoff.
 - Reads: leader by default (follower reads redirect); an **opt-in** flag lets a
-  follower serve stale local reads (documented non-linearizable — toyraft `rc.2`
+  follower serve stale local reads (documented non-linearizable — toyraft `rc.3`
   has no ReadIndex). The bounded-staleness `MAXLAG` contract is v4 (**UP-3**).
 - **Owned risk test:** a client hitting a random node completes every write via
   redirect and reads consistently from the leader; opt-in stale reads return
@@ -520,7 +520,7 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
 - ADR reconciliation: 0018 (extended) / 0019 / 0020 / 0021 land after their owning
   milestones (M1/M2/M3/M4); M6 verifies all files exist and the index note is
   current.
-- **Coordinate toyraft `v1.0.0`:** bump the dependency `rc.2 → v1.0.0` once toyraft
+- **Coordinate toyraft `v1.0.0`:** bump the dependency `rc.3 → v1.0.0` once toyraft
   tags it off this integration.
 - **Release-hardening gate (all must pass before the tag):** linearizability
   harness green on `-race`; leader-kill / partition-heal suite green;
@@ -539,7 +539,7 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
 | v3 M5 | TUI v3: cluster view | 📋 Planned | — | — |
 | v3 M6 | Bench + dogfood report + polish + v3.0.0 | 📋 Planned | — | `v3.0.0` |
 
-Every committed milestone is **buildable on toyraft `rc.2` as it stands today** —
+Every committed milestone is **buildable on toyraft `rc.3` as it stands today** —
 the replication-only cut deliberately avoids the three upstream gaps (UP-1/UP-2/
 UP-3), which now gate [v4.0](#v40--deferred-not-committed) instead.
 
@@ -649,7 +649,7 @@ stays legible:
 | **C — v1 → v2 → v3** | Embrace the distributed-broker trajectory — the actual downstream payoff | Only once `toyraft` ships as a vendorable library and needs a real state machine to validate against |
 
 **Updated 2026-09-04: Option C is now active — v2 → v3.** v2.0.0 shipped, and
-toyraft has reached `v1.0.0-rc.2` with a frozen public API — the exact precondition
+toyraft has reached `v1.0.0-rc.3` with a frozen public API — the exact precondition
 Option C named. The committed [v3.0 arc (v3 M1–M6)](#v300--distributed-multi-node-toyraft--committed)
 is now the active plan. The trajectory is the full A → B → C sequence, not a jump:
 v1 shipped, v2 shipped, v3 is the real downstream payoff that motivated the whole
@@ -672,14 +672,14 @@ else is [v4](#v40--deferred-not-committed) deferral.
 
 **v3 refresh (2026-09-04):**
 
-- **Re-anchored to toyraft `v1.0.0-rc.2`.** The old v3 section (written 2026-07-04,
+- **Re-anchored to toyraft `v1.0.0-rc.3`.** The old v3 section (written 2026-07-04,
   pre-release) hedged *"only attempt if toyraft is real"* and marked two milestones
   `⛔ upstream-blocked`. toyraft is now real with a **frozen** public API, so the
   section is the committed plan and the hedge is gone.
 - **v3.0 narrowed to replication only** (mirrors the toykv v3 cut). Committed set is
   now **six** milestones — embed/determinism seam, multi-node replication+election,
   client routing, `WAIT`+INFO replication, cluster TUI, release. The narrowing is
-  deliberate: it keeps **every committed milestone buildable on `rc.2` today**, so
+  deliberate: it keeps **every committed milestone buildable on `rc.3` today**, so
   **no committed milestone is upstream-blocked**.
 - **Membership, partition placement, follower reads, mirror maker, and push frames
   moved to a new `v4.0 — deferred` section**, each tagged with its upstream gate
@@ -689,10 +689,10 @@ else is [v4](#v40--deferred-not-committed) deferral.
   consumer embedding it; toymq's cluster is that consumer. v3 M6 ships a
   **[migration / dogfooding report](./TOYRAFT-MIGRATION-REPORT.md)** back to toyraft
   as a first-class release deliverable, authored incrementally across M1–M5, and
-  bumps the dependency `rc.2 → v1.0.0`.
+  bumps the dependency `rc.3 → v1.0.0`.
 - **Four architecture decisions locked (2026-09-04):** replication-only scope;
-  leader reads + opt-in stale replica reads (no ReadIndex in `rc.2`); client-driven
-  write redirect; ship on `rc.2` with an unbounded Raft log (compaction structured
+  leader reads + opt-in stale replica reads (no ReadIndex in `rc.3`); client-driven
+  write redirect; ship on `rc.3` with an unbounded Raft log (compaction structured
   now, deferred to v4 pending toyraft `v2` snapshots).
 - **Per-milestone dependency + ADR ownership** continues the v2 pattern: embed /
   determinism seam → v3 M1 (ADR 0018 extended), cluster/transport/storage →
