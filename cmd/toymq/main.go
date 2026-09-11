@@ -217,12 +217,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// attachRaft builds a single-node embedded raft, starts it, waits for it to
-// become leader, and switches the broker into replicated mode. M1 is
-// single-node: Peers is [self] (trivially leader) and the transport is a no-op
-// because neither shipped toyraft transport can express a self-only cluster
-// (see internal/replication/transport.go). M2 replaces this with real peers
-// over pkg/transport/http.
+// attachRaft builds the embedded raft node, starts it, and switches the broker
+// into replicated mode. Two shapes:
+//
+//   - single-node (--peers empty): Peers is [self] (trivially leader) over a
+//     no-op transport, because neither shipped toyraft transport can express a
+//     self-only cluster (see internal/replication/transport.go). We block until
+//     self-leadership so the first PUB does not race ErrNotLeader.
+//   - multi-node (--peers set): full membership over the async-wrapped http
+//     peer transport. A follower never self-leads, so we do NOT wait for
+//     leadership here; the leader-gate (broker propose → *raft.ErrNotLeader,
+//     surfaced as NOTLEADER) rejects writes until this node is or knows the
+//     leader.
 func attachRaft(ctx context.Context, b *broker.Broker, cfg *config.Config, logger *slog.Logger) (raft.Node, error) {
 	raftDir := cfg.ResolvedRaftDir()
 	store, err := filestorage.New(raftDir)
@@ -230,12 +236,17 @@ func attachRaft(ctx context.Context, b *broker.Broker, cfg *config.Config, logge
 		return nil, fmt.Errorf("open raft storage at %q: %w", raftDir, err)
 	}
 
+	peers, transport, err := raftPeersAndTransport(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	sm := replication.NewBrokerSM(b)
 	node, err := raft.New(raft.Config{
 		NodeID:       raft.NodeID(cfg.NodeID),
-		Peers:        []raft.NodeID{raft.NodeID(cfg.NodeID)}, // [self]
+		Peers:        peers,
 		Storage:      store,
-		Transport:    replication.NewSingleNodeTransport(),
+		Transport:    transport,
 		StateMachine: sm,
 	})
 	if err != nil {
@@ -245,17 +256,38 @@ func attachRaft(ctx context.Context, b *broker.Broker, cfg *config.Config, logge
 		return nil, fmt.Errorf("start raft node: %w", err)
 	}
 
-	// A single-node cluster campaigns and wins within one election timeout.
-	// Block until leadership so the first PUB does not race a not-yet-leader
-	// node with ErrNotLeader.
-	if err := waitForLeader(ctx, node, 5*time.Second); err != nil {
-		_ = node.Stop()
-		return nil, err
+	if cfg.Peers == "" {
+		// Single-node campaigns and wins within one election timeout; block so
+		// the first PUB does not race a not-yet-leader node.
+		if err := waitForLeader(ctx, node, 5*time.Second); err != nil {
+			_ = node.Stop()
+			return nil, err
+		}
 	}
 
 	b.AttachRaft(node)
-	logger.Info("replication enabled", "node-id", cfg.NodeID, "raft-dir", raftDir)
+	logger.Info("replication enabled", "node-id", cfg.NodeID, "raft-dir", raftDir,
+		"peers", cfg.Peers, "raft-addr", cfg.RaftAddr)
 	return node, nil
+}
+
+// raftPeersAndTransport returns the raft membership and transport for cfg:
+// [self] + no-op transport when --peers is empty, else the full membership +
+// the async-wrapped http peer transport.
+func raftPeersAndTransport(cfg *config.Config) ([]raft.NodeID, raft.Transport, error) {
+	if cfg.Peers == "" {
+		return []raft.NodeID{raft.NodeID(cfg.NodeID)}, replication.NewSingleNodeTransport(), nil
+	}
+	membership := cfg.ClusterPeers() // includes self
+	peers := make([]raft.NodeID, 0, len(membership))
+	for id := range membership {
+		peers = append(peers, raft.NodeID(id))
+	}
+	transport, err := replication.NewHTTPTransport(cfg.NodeID, cfg.RaftAddr, cfg.PeerURLsExcludingSelf())
+	if err != nil {
+		return nil, nil, fmt.Errorf("build raft transport: %w", err)
+	}
+	return peers, transport, nil
 }
 
 // waitForLeader polls node.Status until it reports Leader or timeout elapses.
