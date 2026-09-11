@@ -5,7 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/wal"
@@ -79,9 +81,16 @@ type Config struct {
 	// byte-identical to v2. NodeID is this node's raft identity. RaftDir is
 	// the raft log/state store; empty defaults to <data-dir>/raft. M1 is
 	// single-node only (Peers == [self]); multi-node peer wiring is M2.
+	//
+	// Peers is the raw --peers flag: "id@baseURL,id@baseURL,…", the full
+	// cluster membership including self (v3 M2, ADR 0030). Empty keeps the M1
+	// single-node path. RaftAddr is this node's raft-transport listen address
+	// (host:port); required when Peers is set.
 	Replicate bool
 	NodeID    string
 	RaftDir   string
+	Peers     string
+	RaftAddr  string
 }
 
 // Default flag values exported so cmd binaries (toymqctl, toymq-bench,
@@ -144,6 +153,8 @@ func Parse(args []string, stderr io.Writer) (*Config, error) {
 	fs.BoolVar(&cfg.Replicate, "replicate", false, "route mutating commands through embedded raft (v3 M1, single-node); false = standalone")
 	fs.StringVar(&cfg.NodeID, "node-id", DefaultNodeID, "raft node identity for -replicate")
 	fs.StringVar(&cfg.RaftDir, "raft-dir", "", "raft log/state directory for -replicate; empty defaults to <data-dir>/raft")
+	fs.StringVar(&cfg.Peers, "peers", "", "cluster membership incl self for -replicate: id@baseURL,…; empty = single-node (v3 M2)")
+	fs.StringVar(&cfg.RaftAddr, "raft-addr", "", "this node's raft transport listen address host:port; required with -peers")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -213,7 +224,77 @@ func (c *Config) validate() error {
 	if c.Replicate && c.NodeID == "" {
 		return errors.New("node-id must not be empty with -replicate")
 	}
+	if c.Replicate && c.Peers != "" {
+		peers, err := ParsePeers(c.Peers)
+		if err != nil {
+			return fmt.Errorf("peers: %w", err)
+		}
+		if _, ok := peers[c.NodeID]; !ok {
+			return fmt.Errorf("peers must contain this node's own id %q (self must appear in the membership)", c.NodeID)
+		}
+		if len(peers)%2 == 0 {
+			return fmt.Errorf("peers must be odd for a clean majority, got %d (even N can split quorum)", len(peers))
+		}
+		if c.RaftAddr == "" {
+			return errors.New("raft-addr must be set with -peers")
+		}
+	}
 	return nil
+}
+
+// ParsePeers parses the --peers flag ("id@baseURL,id@baseURL,…") into a
+// NodeID→base-URL map. The map is string-keyed so this package stays free of a
+// toyraft import; cmd converts to raft.NodeID at assembly. Entries are
+// comma-separated; each is "id@url" with a non-empty id and a parseable
+// absolute URL. A duplicate id is an error (a later entry silently overwriting
+// an earlier one is a config bug, not a merge).
+func ParsePeers(raw string) (map[string]string, error) {
+	out := make(map[string]string)
+	for entry := range strings.SplitSeq(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("empty entry in %q", raw)
+		}
+		id, rawURL, ok := strings.Cut(entry, "@")
+		if !ok || id == "" || rawURL == "" {
+			return nil, fmt.Errorf("entry %q: want id@baseURL", entry)
+		}
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			return nil, fmt.Errorf("entry %q: %w", entry, err)
+		}
+		if u.Scheme == "" || u.Host == "" {
+			return nil, fmt.Errorf("entry %q: baseURL must be absolute (scheme://host)", entry)
+		}
+		if _, dup := out[id]; dup {
+			return nil, fmt.Errorf("duplicate node id %q", id)
+		}
+		out[id] = rawURL
+	}
+	return out, nil
+}
+
+// ClusterPeers returns the parsed --peers map, or nil when Peers is empty
+// (single-node path). Assumes validate has already run, so it ignores the parse
+// error a validated config cannot produce.
+func (c *Config) ClusterPeers() map[string]string {
+	if c.Peers == "" {
+		return nil
+	}
+	peers, _ := ParsePeers(c.Peers)
+	return peers
+}
+
+// PeerURLsExcludingSelf returns the peer→URL map with this node removed, as the
+// http transport's PeerURLs wants (it never Sends to itself). nil for the
+// single-node path.
+func (c *Config) PeerURLsExcludingSelf() map[string]string {
+	peers := c.ClusterPeers()
+	if peers == nil {
+		return nil
+	}
+	delete(peers, c.NodeID)
+	return peers
 }
 
 // ResolvedRaftDir returns the raft store directory: RaftDir when set, else
