@@ -136,6 +136,18 @@ func TestParseValidation(t *testing.T) {
 		{"retain-bytes without segment-bytes", []string{"-retain-bytes", "1024"}, "require -segment-bytes"},
 		{"retain-duration without segment-bytes", []string{"-retain-duration", "1h"}, "require -segment-bytes"},
 		{"negative dlq-after-nacks", []string{"-dlq-after-nacks", "-1"}, "dlq-after-nacks"},
+		{"peers self missing", []string{"-replicate", "-node-id", "n9", "-raft-addr", "127.0.0.1:1",
+			"-peers", "n1@http://a:1,n2@http://b:2,n3@http://c:3"}, "must contain this node's own id"},
+		{"peers even N", []string{"-replicate", "-raft-addr", "127.0.0.1:1",
+			"-peers", "n1@http://a:1,n2@http://b:2"}, "must be odd"},
+		{"peers missing raft-addr", []string{"-replicate",
+			"-peers", "n1@http://a:1"}, "raft-addr must be set"},
+		{"peers malformed entry", []string{"-replicate", "-raft-addr", "127.0.0.1:1",
+			"-peers", "n1-no-at-sign"}, "want id@baseURL"},
+		{"peers duplicate id", []string{"-replicate", "-raft-addr", "127.0.0.1:1",
+			"-peers", "n1@http://a:1,n1@http://b:2"}, "duplicate node id"},
+		{"peers relative url", []string{"-replicate", "-raft-addr", "127.0.0.1:1",
+			"-peers", "n1@justhost"}, "must be absolute"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -147,6 +159,44 @@ func TestParseValidation(t *testing.T) {
 				t.Errorf("err = %v, want substring %q", err, tc.wantInErr)
 			}
 		})
+	}
+}
+
+func TestParsePeers(t *testing.T) {
+	peers, err := ParsePeers("n1@http://127.0.0.1:7001,n2@http://127.0.0.1:7002,n3@http://127.0.0.1:7003")
+	if err != nil {
+		t.Fatalf("ParsePeers: %v", err)
+	}
+	want := map[string]string{
+		"n1": "http://127.0.0.1:7001",
+		"n2": "http://127.0.0.1:7002",
+		"n3": "http://127.0.0.1:7003",
+	}
+	if len(peers) != len(want) {
+		t.Fatalf("len = %d, want %d", len(peers), len(want))
+	}
+	for id, url := range want {
+		if peers[id] != url {
+			t.Errorf("peers[%q] = %q, want %q", id, peers[id], url)
+		}
+	}
+}
+
+func TestConfigPeerHelpers(t *testing.T) {
+	cfg, err := Parse([]string{"-replicate", "-node-id", "n2", "-raft-addr", "127.0.0.1:7002",
+		"-peers", "n1@http://127.0.0.1:7001,n2@http://127.0.0.1:7002,n3@http://127.0.0.1:7003"}, io.Discard)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := len(cfg.ClusterPeers()); got != 3 {
+		t.Fatalf("ClusterPeers len = %d, want 3", got)
+	}
+	excl := cfg.PeerURLsExcludingSelf()
+	if _, self := excl["n2"]; self {
+		t.Errorf("PeerURLsExcludingSelf still contains self n2: %v", excl)
+	}
+	if len(excl) != 2 {
+		t.Errorf("PeerURLsExcludingSelf len = %d, want 2", len(excl))
 	}
 }
 
