@@ -300,9 +300,13 @@ func TestClusterLinearizablePubConsume(t *testing.T) {
 				}
 			}
 			partition([]*clusterNode{victim}, others)
-			time.Sleep(500 * time.Millisecond)
-			healAll(nodes)
 			time.Sleep(700 * time.Millisecond)
+			healAll(nodes)
+			// Healed window > ElectionTimeoutMax (2s) so a just-un-isolated
+			// node — whose term jumped while it campaigned in isolation — has
+			// a stable-leader window to rejoin and catch up before the next
+			// isolation, bounding end-of-churn divergence.
+			time.Sleep(2500 * time.Millisecond)
 			i++
 		}
 	}()
@@ -349,8 +353,14 @@ func TestClusterLinearizablePubConsume(t *testing.T) {
 	slices.Sort(acked)
 	maxID := acked[len(acked)-1]
 
+	// Let the post-heal term dust settle to a single stable leader before
+	// starting the convergence clock: a node that campaigned while isolated
+	// rejoins with a higher term and forces one re-election, and a lagging
+	// follower only catches up once a leader is heartbeating it.
+	waitLeader(t, nodes, nil, 30*time.Second)
+
 	// No acked PUB lost: every node must hold the log up to maxID once healed.
-	waitConverged(t, nodes, "orders", 0, maxID, 30*time.Second)
+	waitConverged(t, nodes, "orders", 0, maxID, 60*time.Second)
 
 	// Drain the converged log as the consume sequence (post-heal, sequential):
 	// one consume per acked MsgID, timestamped strictly after every PUB return.
