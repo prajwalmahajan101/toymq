@@ -291,9 +291,27 @@ func (s *Session) handlePauseResume(paused bool) {
 	})
 }
 
+// sendIfNotLeader writes a NOTLEADER <leader-id> response and reports true when
+// err is a raft not-leader rejection (a write that reached a follower in a
+// replicated cluster). Returns false for every other error, leaving the caller
+// to emit its command-specific *_FAILED. Client-side redirect + retry is M3.
+func (s *Session) sendIfNotLeader(err error) bool {
+	hint, ok := s.broker.NotLeaderHint(err)
+	if !ok {
+		return false
+	}
+	s.sendResp(func(bw *bufio.Writer) error {
+		return proto.WriteErr(bw, proto.ErrCodeNotLeader, hint)
+	})
+	return true
+}
+
 func (s *Session) handlePub(ctx context.Context, c proto.PubCommand) {
 	id, _, dup, err := s.broker.PublishCtx(s.takeTraceCtx(ctx), c.Topic, c.DedupeKey, c.RoutingKey, c.Partition, c.PartitionSet, c.Payload, c.DelayMs)
 	if err != nil {
+		if s.sendIfNotLeader(err) {
+			return
+		}
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "PUB_FAILED", reason)
@@ -314,6 +332,9 @@ func (s *Session) handlePub(ctx context.Context, c proto.PubCommand) {
 
 func (s *Session) handleCreate(c proto.CreateCommand) {
 	if err := s.broker.CreateTopic(c.Topic, c.Partitions); err != nil {
+		if s.sendIfNotLeader(err) {
+			return
+		}
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "CREATE_FAILED", reason)
@@ -333,6 +354,9 @@ func (s *Session) handleAck(ctx context.Context, c proto.AckCommand) {
 		return
 	}
 	if err := s.broker.AckCtx(s.takeTraceCtx(ctx), s.currentTopic, c.Partition, c.ConsumerID, c.MsgID); err != nil {
+		if s.sendIfNotLeader(err) {
+			return
+		}
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "ACK_FAILED", reason)
@@ -354,6 +378,9 @@ func (s *Session) handleNack(ctx context.Context, c proto.NackCommand) {
 		return
 	}
 	if err := s.broker.NackCtx(s.takeTraceCtx(ctx), s.currentTopic, c.Partition, c.ConsumerID, c.MsgID, s.sendCh); err != nil {
+		if s.sendIfNotLeader(err) {
+			return
+		}
 		reason := err.Error()
 		s.sendResp(func(bw *bufio.Writer) error {
 			return proto.WriteErr(bw, "NACK_FAILED", reason)

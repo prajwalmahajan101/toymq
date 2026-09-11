@@ -16,6 +16,10 @@ var (
 const (
 	ErrCodeHello = "HELLO" // missing/malformed handshake or unsupported version
 	ErrCodeAuth  = "AUTH"  // missing or invalid AUTH token
+	// ErrCodeNotLeader is returned for a write sent to a non-leader node in a
+	// replicated cluster; the reason carries the leader's node id (v3 M2, ADR
+	// 0030). Client-side redirect resolution + auto-retry is M3.
+	ErrCodeNotLeader = "NOTLEADER"
 )
 
 const MaxLineLength = 1 << 16 // 64kiB cap for header lines

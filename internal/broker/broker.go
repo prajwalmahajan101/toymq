@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -109,6 +110,32 @@ type Broker struct {
 // at startup by cmd/toymq after raft.New — never mid-flight.
 func (b *Broker) AttachRaft(node raft.Node) {
 	b.raft = node
+}
+
+// LeaderHint returns the raft node's best-known current leader id, or "" when
+// standalone or the leader is unknown (v3 M2). The server uses it to fill the
+// NOTLEADER reason when a write lands on a follower.
+func (b *Broker) LeaderHint() string {
+	if b.raft == nil {
+		return ""
+	}
+	return string(b.raft.LeaderHint())
+}
+
+// NotLeaderHint reports whether err is a raft not-leader rejection (a write that
+// reached a follower) and, if so, the leader id to redirect to: the rejection's
+// own LeaderHint, or the broker's current best guess when the rejection carries
+// none. It lets the server surface NOTLEADER without importing toyraft (v3 M2).
+func (b *Broker) NotLeaderHint(err error) (string, bool) {
+	var nl *raft.ErrNotLeader
+	if !errors.As(err, &nl) {
+		return "", false
+	}
+	hint := string(nl.LeaderHint)
+	if hint == "" {
+		hint = b.LeaderHint()
+	}
+	return hint, true
 }
 
 // proposePublish is the replicated publish path. It resolves the clock-derived
