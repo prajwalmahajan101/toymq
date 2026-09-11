@@ -187,8 +187,34 @@ mapping with no workaround.
 helper in tests because the http transport binds via `ListenAndServe` and gives
 no way to read back a `:0`-assigned port (minor — noted, not filed).
 
-**Deferred:** partition-heal + linearizability harness (M2b); NodeID→client-addr
-resolution + client auto-retry + read redirect (M3).
+**Deferred:** NodeID→client-addr resolution + client auto-retry + read redirect (M3).
+
+**M2b — partition-heal + linearizability harness** (ADR 0031). Added a test-only
+bidirectional partition seam (`partitionableTransport`, drops Send-to and
+Step-from a blocked peer) — the fault `node.Stop()` cannot express (a kill has no
+live minority, so no split-brain). Two tests, green under `-race`:
+`TestClusterPartitionHealNoLoss` (isolate the leader alone → it cannot ack a write
+→ majority elects and serves → heal → minority truncates its uncommitted tail and
+converges, zero acked-write loss) and `TestClusterLinearizablePubConsume` (a
+porcupine message-queue model over concurrent PUBs under partition churn; no acked
+PUB lost, no double-consume).
+
+**Confirmed working (rc.3):** `Propose` on a partitioned leader blocks on quorum
+and returns `ctx.Err()` on the caller's deadline (`node_public.go` selects on
+`<-ctx.Done()`), so a bounded `PublishCtx` cleanly rejects a minority write —
+no hang, no phantom ack. On heal, raft log-matching truncates the isolated
+leader's uncommitted tail with no embedder involvement — divergent-tail
+reconciliation is automatic.
+
+**Worked around (M2b):** none — the partition test is pure fault injection at the
+transport boundary; no toyraft API gap surfaced.
+
+**Noted (not filed):** a `ctx`-cancelled `Propose` may still commit later, so the
+write is at-least-once from the client's view. Expected raft semantics; the
+harness treats the acked set as a subset of the converged log, never asserts
+equality. A `Propose` that could report "definitely not committed" on ctx-cancel
+would let a client distinguish lost from delayed — a possible future API note, not
+a bug.
 
 ### v3 M3 — client routing
 _Not started._

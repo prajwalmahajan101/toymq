@@ -442,7 +442,7 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
   `Propose→Apply`; broker state matches standalone; durability suite green.
 
 ## v3 M2 — Multi-node replication + leader election *(the distributed core)*
-**Branch:** `feat/cluster` · **Depends on:** v3 M1 · **ADR:** 0019 — cluster mode, peer transport & raft-log storage layout
+**Branch:** `feat/cluster` · **Depends on:** v3 M1 · **ADR:** [0030](./adr/0030-cluster-mode-peer-transport.md) (M2a — peer transport, membership, NOTLEADER gate), [0031](./adr/0031-partition-heal-linearizability-harness.md) (M2b — partition-heal + linearizability harness)
 - `toymq --replicate --peers <id@host:raftport,…> --raft-addr --raft-dir` for
   3 / 5 / 7-node clusters (odd N — toyraft rejects even N). Wire toyraft
   `pkg/transport/http` (peer plane, distinct from the client plane) + copy the
@@ -456,7 +456,10 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
   `-race`. Pass criterion: no acked PUB lost, no double-ack accepted as a unique
   consume.
 - **Exit:** 3-node cluster replicates all writes; survives leader kill + partition
-  with zero acked-write loss; linearizability harness green.
+  with zero acked-write loss; linearizability harness green. **✅ met** — M2a
+  (kill + replicate + NOTLEADER gate) and M2b (`TestClusterPartitionHealNoLoss` +
+  `TestClusterLinearizablePubConsume`, porcupine, `-race`) both green on
+  `feat/cluster`.
 
 ## v3 M3 — Client routing: write redirect + read model
 **Branch:** `feat/cluster-routing` · **Depends on:** v3 M2 · **ADR:** 0020 — write redirection & cluster read consistency
@@ -533,7 +536,7 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
 | Milestone | Title | Status | PR | Tag |
 |---|---|---|---|---|
 | v3 M1 | Raft embedding + single-node replicated path | 📋 Planned (buildable now) | — | — |
-| v3 M2 | Multi-node replication + leader election | 📋 Planned (buildable now) | — | — |
+| v3 M2 | Multi-node replication + leader election | 🚧 M2a+M2b done (`feat/cluster`, ADR 0030/0031) | — | — |
 | v3 M3 | Client routing: write redirect + read model | 📋 Planned (buildable now) | — | — |
 | v3 M4 | `WAIT` + INFO replication + cluster observability | 📋 Planned (buildable now) | — | — |
 | v3 M5 | TUI v3: cluster view | 📋 Planned | — | — |
