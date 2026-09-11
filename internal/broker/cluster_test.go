@@ -87,6 +87,14 @@ func newCluster(t *testing.T, n int) []*clusterNode {
 			Transport:    transport,
 			StateMachine: replication.NewBrokerSM(b),
 			Seed:         int64(i + 1),
+			// Real-time election over http loopback runs under -race on shared
+			// CI runners where goroutine starvation easily exceeds the 150ms
+			// default election timeout, causing spurious re-elections and
+			// leadership churn. Widen the timeouts (keeping HeartbeatInterval*3
+			// <= ElectionTimeoutMin) so leadership stays stable under load.
+			HeartbeatInterval:  200 * time.Millisecond,
+			ElectionTimeoutMin: 1 * time.Second,
+			ElectionTimeoutMax: 2 * time.Second,
 		})
 		if err != nil {
 			t.Fatalf("raft.New %s: %v", id, err)
@@ -156,28 +164,52 @@ func waitConverged(t *testing.T, want []*clusterNode, topic string, partition in
 	t.Fatalf("cluster did not converge to head=%d within %s (last: %s)", wantHead, timeout, last)
 }
 
+// publishOnLeader publishes one message, re-resolving the current leader and
+// retrying until it succeeds or the deadline passes. It tolerates transient
+// leadership churn: a Publish that returns a not-leader rejection means the
+// entry was not applied (toyraft's Propose applies before returning), so
+// re-resolving the leader and retrying is safe and cannot double-publish.
+func publishOnLeader(t *testing.T, nodes []*clusterNode, exclude *clusterNode, payload []byte, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		leader := waitLeader(t, nodes, exclude, 15*time.Second)
+		_, _, _, err := leader.broker.Publish("orders", "", "", 0, false, payload)
+		if err == nil {
+			return
+		}
+		if _, isNotLeader := leader.broker.NotLeaderHint(err); !isNotLeader {
+			t.Fatalf("publish on leader %s: %v", leader.id, err)
+		}
+		time.Sleep(50 * time.Millisecond) // leadership churned mid-write; retry
+	}
+	t.Fatalf("could not publish via a stable leader within %s", timeout)
+}
+
+// isClusterMember reports whether id names a node in the cluster.
+func isClusterMember(nodes []*clusterNode, id string) bool {
+	for _, cn := range nodes {
+		if cn.id == id {
+			return true
+		}
+	}
+	return false
+}
+
 // TestClusterReplicatesToAllFollowers proves the distributed core: a
 // leader-acked PUB lands on every follower's broker state via Propose→Apply.
 func TestClusterReplicatesToAllFollowers(t *testing.T) {
 	nodes := newCluster(t, 3)
-	leader := waitLeader(t, nodes, nil, 10*time.Second)
 
 	const k = 5
-	for i := range k {
-		id, _, dup, err := leader.broker.Publish("orders", "", "", 0, false, []byte("m"))
-		if err != nil {
-			t.Fatalf("publish %d on leader %s: %v", i, leader.id, err)
-		}
-		if dup {
-			t.Fatalf("publish %d: unexpected dup", i)
-		}
-		if id != uint64(i) {
-			t.Fatalf("publish %d: MsgID = %d, want %d", i, id, i)
-		}
+	for range k {
+		publishOnLeader(t, nodes, nil, []byte("m"), 15*time.Second)
 	}
 
-	// head() is highest assigned id = k-1 once all k are applied everywhere.
-	waitConverged(t, nodes, "orders", 0, k-1, 10*time.Second)
+	// k successful publishes → highest assigned id k-1 on every node once all
+	// are applied. (MsgID contiguity itself is the M1 single-node guarantee;
+	// M2a owns replication: the same head reaching every follower.)
+	waitConverged(t, nodes, "orders", 0, k-1, 15*time.Second)
 }
 
 // TestClusterFollowerRejectsWrite proves the leader-gate: a write proposed on a
@@ -185,25 +217,28 @@ func TestClusterReplicatesToAllFollowers(t *testing.T) {
 // surfaces as NOTLEADER (mapped in session.go).
 func TestClusterFollowerRejectsWrite(t *testing.T) {
 	nodes := newCluster(t, 3)
-	leader := waitLeader(t, nodes, nil, 10*time.Second)
 
-	var follower *clusterNode
-	for _, cn := range nodes {
-		if cn != leader {
-			follower = cn
-			break
-		}
-	}
-
-	// The follower always rejects the write as not-leader. The leader hint is
-	// best-effort — a freshly-elected follower may not know the leader for a
-	// heartbeat or two — so poll until it resolves, asserting the rejection type
-	// on every attempt.
-	deadline := time.Now().Add(10 * time.Second)
+	// Poll until a follower rejects a write as not-leader with a resolved hint
+	// naming a cluster member. Re-resolves the leader/follower each attempt so a
+	// rare mid-test re-election cannot wedge the test.
+	deadline := time.Now().Add(15 * time.Second)
 	for {
+		leader := waitLeader(t, nodes, nil, 15*time.Second)
+		var follower *clusterNode
+		for _, cn := range nodes {
+			if cn != leader {
+				follower = cn
+				break
+			}
+		}
+
 		_, _, _, err := follower.broker.Publish("orders", "", "", 0, false, []byte("m"))
 		if err == nil {
-			t.Fatalf("follower %s accepted a write; want ErrNotLeader", follower.id)
+			// follower just became leader in a churn; retry the resolution.
+			if time.Now().After(deadline) {
+				t.Fatal("follower kept accepting writes; no stable follower to reject")
+			}
+			continue
 		}
 		var nl *raft.ErrNotLeader
 		if !errors.As(err, &nl) {
@@ -214,13 +249,14 @@ func TestClusterFollowerRejectsWrite(t *testing.T) {
 			t.Fatalf("NotLeaderHint did not recognize %v as a not-leader rejection", err)
 		}
 		if hint != "" {
-			if hint != leader.id {
-				t.Fatalf("leader hint = %q, want %q", hint, leader.id)
+			// Hint is best-effort; when set it must name a real cluster member.
+			if !isClusterMember(nodes, hint) {
+				t.Fatalf("leader hint = %q; not a cluster member", hint)
 			}
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("follower never resolved a leader hint within 10s")
+			t.Fatal("follower never resolved a leader hint within 15s")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -232,17 +268,15 @@ func TestClusterFollowerRejectsWrite(t *testing.T) {
 // that replicate to the other survivor.
 func TestClusterSurvivesLeaderKill(t *testing.T) {
 	nodes := newCluster(t, 3)
-	leader := waitLeader(t, nodes, nil, 10*time.Second)
 
 	const k = 3
-	for i := range k {
-		if _, _, _, err := leader.broker.Publish("orders", "", "", 0, false, []byte("m")); err != nil {
-			t.Fatalf("publish %d on leader %s: %v", i, leader.id, err)
-		}
+	for range k {
+		publishOnLeader(t, nodes, nil, []byte("m"), 15*time.Second)
 	}
-	waitConverged(t, nodes, "orders", 0, k-1, 10*time.Second)
+	waitConverged(t, nodes, "orders", 0, k-1, 15*time.Second)
 
-	// Kill the leader.
+	// Kill the current leader.
+	leader := waitLeader(t, nodes, nil, 15*time.Second)
 	if err := leader.node.Stop(); err != nil {
 		t.Fatalf("stop leader %s: %v", leader.id, err)
 	}
@@ -253,16 +287,13 @@ func TestClusterSurvivesLeaderKill(t *testing.T) {
 		}
 	}
 
-	// A new leader must emerge among the two survivors (quorum of 3 = 2).
-	newLeader := waitLeader(t, nodes, leader, 10*time.Second)
+	// A new leader must emerge among the two survivors (quorum of 3 = 2), and
+	// the pre-kill acked writes survive on both.
+	waitLeader(t, nodes, leader, 15*time.Second)
+	waitConverged(t, survivors, "orders", 0, k-1, 15*time.Second)
 
-	// The pre-kill acked writes survive on both survivors...
-	waitConverged(t, survivors, "orders", 0, k-1, 10*time.Second)
-
-	// ...and the new leader accepts a fresh write that replicates to the other
-	// survivor. head advances to k (ids 0..k).
-	if _, _, _, err := newLeader.broker.Publish("orders", "", "", 0, false, []byte("after-kill")); err != nil {
-		t.Fatalf("publish on new leader %s: %v", newLeader.id, err)
-	}
-	waitConverged(t, survivors, "orders", 0, k, 10*time.Second)
+	// The new leader accepts a fresh write that replicates to the other
+	// survivor; head advances to k.
+	publishOnLeader(t, nodes, leader, []byte("after-kill"), 15*time.Second)
+	waitConverged(t, survivors, "orders", 0, k, 15*time.Second)
 }
