@@ -15,11 +15,13 @@ import (
 )
 
 // clusterNode is one member of an in-process test cluster: a broker, its
-// BrokerSM-driven raft node, and the node's id.
+// BrokerSM-driven raft node, and the node's id. part is the test-only partition
+// seam wrapping this node's transport (see cluster_partition_test.go).
 type clusterNode struct {
 	id     string
 	broker *Broker
 	node   raft.Node
+	part   *partitionableTransport
 }
 
 // freeLoopbackAddr returns a currently-free 127.0.0.1 TCP address. Standard
@@ -72,10 +74,11 @@ func newCluster(t *testing.T, n int) []*clusterNode {
 				peerURLs[pid] = u
 			}
 		}
-		transport, err := replication.NewHTTPTransport(id, addrs[id], peerURLs)
+		inner, err := replication.NewHTTPTransport(id, addrs[id], peerURLs)
 		if err != nil {
 			t.Fatalf("transport %s: %v", id, err)
 		}
+		transport := newPartitionableTransport(inner)
 		store, err := filestorage.New(filepath.Join(base, "raft"))
 		if err != nil {
 			t.Fatalf("storage %s: %v", id, err)
@@ -104,7 +107,7 @@ func newCluster(t *testing.T, n int) []*clusterNode {
 		}
 		b.AttachRaft(node)
 
-		cn := &clusterNode{id: id, broker: b, node: node}
+		cn := &clusterNode{id: id, broker: b, node: node, part: transport}
 		nodes = append(nodes, cn)
 		t.Cleanup(func() {
 			_ = node.Stop()
