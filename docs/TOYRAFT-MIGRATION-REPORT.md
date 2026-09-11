@@ -69,6 +69,7 @@ Places where the frozen public API is workable but cost toymq extra code or clar
 | FRICTION-01 | 🟠 | [fixed-upstream rc.3] | **`Propose` discards the `Apply` result.** `raft.Node.Propose` returns `(Index, Term, error)` and drops `Apply`'s `any` return, so a PUB's WAL-assigned MsgID cannot come back through `Propose`. toymq had to build a nonce-result registry (`internal/replication/registry.go`): the leader stamps a nonce, registers a channel, and `Apply` resolves it. The rc.2 reference `kvsm` hits the same wall — it exposes a separate `Get` for exactly this reason. **Request:** return the apply result from `Propose`, or expose a typed result channel. `pkg/raft`. |
 | FRICTION-02 | 🟠 | [fixed-upstream rc.3] | **`inproc` transport unusable by external embedders.** `inproc.HubConfig.Clock` is typed `internal/clock.Clock` — an external module cannot construct it — and `NewHub` hard-errors on a nil Clock. So the in-process transport (ideal for a single-node embed and for tests) cannot be built outside the toyraft module. `pkg/transport/inproc`. |
 | FRICTION-03 | 🟠 | [fixed-upstream rc.3] | **No transport expresses a `peers=[self]` cluster.** `http.Config.Validate` rejects an empty `PeerURLs` *and* rejects this node's own ID in `PeerURLs`. A single-node cluster (peers == [self], so `PeerURLs` excludes self → empty) satisfies neither. Combined with FRICTION-02, **neither shipped transport can build a single-node cluster**; toymq supplies a local no-op `raft.Transport` (`internal/replication/transport.go`). `pkg/transport/http`. |
+| FRICTION-04 | 🟠 | [confirmed-in-integration] | **The driver calls `Transport.Send` synchronously, but the http `Send` blocks → an embedder must write an async wrapper for liveness.** `pkg/raft/driver.go` sends outbound messages inline in its single driver goroutine (`for _, m := range msgs { Transport.Send(ctx, m) }`), and `pkg/transport/http` `client.Send` is a blocking POST with retries + `SendTimeout`. So one dead or slow peer stalls the driver: no ticks, no commits, no election — a cluster-wide liveness failure, not just a lost message. Every embedder using the http transport must therefore decorate it with a per-peer async queue. toymq ships `internal/replication.asyncTransport` (buffered per-peer send + pump goroutine, drop-on-full, matching the best-effort `Send` contract). **Request:** ship an async transport option in-tree, or make the driver fan out Sends off the tick loop, so embedders get liveness by default. `pkg/raft` (`driver.go`) + `pkg/transport/http`. |
 
 ---
 
@@ -159,7 +160,35 @@ all six findings. toymq bumped to rc.3 and:
   idempotence guard**. Retiring the guard + log compaction remain a v4 item.
 
 ### v3 M2 — multi-node + election
-_Not started._
+
+**M2a — distributed core** (ADR 0030). Swapped the single-node no-op transport
+for a real N-node cluster over `pkg/transport/http`: `toymq --replicate --peers
+id@url,… --raft-addr host:port`. Every mutating command replicates
+`Propose→Apply` to all followers; a write on a follower is leader-gated
+(`*raft.ErrNotLeader` → wire `NOTLEADER <leader-id>`); killing the leader elects
+a new one among survivors with the prior acked writes intact. Verified in-process
+over the http transport on loopback under `-race` (`internal/broker/cluster_test.go`).
+
+**Surfaced:**
+- **FRICTION-04** (§2) — the driver's synchronous `Transport.Send` + the http
+  transport's blocking `Send` mean a dead peer stalls the whole driver (no ticks,
+  no commits, no election). This forced an async send decorator
+  (`internal/replication.asyncTransport`, per-peer buffered queue + pump,
+  drop-on-full) — mandatory for liveness, not an optimization. This is the M2a
+  finding delivered back upstream.
+
+**Confirmed working (rc.3):** multi-peer `http.Config.PeerURLs`; `LeaderHint()`
+on the node API; `node.Start` wiring `Transport.Register(n.Step)` for the inbound
+plane; `*raft.ErrNotLeader{LeaderHint}` as a typed, `errors.As`-able rejection —
+all behaved as documented, so the leader-gate and redirect-hint were a thin
+mapping with no workaround.
+
+**Worked around:** async transport decorator (FRICTION-04); free-loopback-port
+helper in tests because the http transport binds via `ListenAndServe` and gives
+no way to read back a `:0`-assigned port (minor — noted, not filed).
+
+**Deferred:** partition-heal + linearizability harness (M2b); NodeID→client-addr
+resolution + client auto-retry + read redirect (M3).
 
 ### v3 M3 — client routing
 _Not started._
