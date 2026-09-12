@@ -70,6 +70,12 @@ func (b *Broker) runRetentionLoop() {
 	}
 }
 
+// SweepRetentionNow runs one reclaim sweep synchronously against the
+// current clock. It is a test seam: integration tests set a long
+// retention Interval (no background ticks) and call this at the exact
+// point the floor should advance, so reclaim never races the wire ops.
+func (b *Broker) SweepRetentionNow() { b.sweepRetention(time.Now()) }
+
 // sweepRetention reclaims disk for every partition once. now is passed
 // in (not read from the clock) so tests can drive age-based retention
 // with a fixed instant.

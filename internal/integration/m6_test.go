@@ -9,13 +9,15 @@ import (
 )
 
 // aggressiveRetention rolls tiny segments and keeps only a few records,
-// so a modest publish burst reclaims older segments within a couple of
-// sweep ticks.
+// so a modest publish burst reclaims older segments in one sweep. The
+// Interval is effectively disabled (1h): tests drive reclaim explicitly
+// via h.broker.SweepRetentionNow() so the sweep never races the wire ops
+// (an early background tick used to reclaim seg 0 before the first read).
 func aggressiveRetention() broker.RetentionConfig {
 	return broker.RetentionConfig{
 		SegmentBytes: 200,
 		RetainBytes:  400,
-		Interval:     20 * time.Millisecond,
+		Interval:     time.Hour,
 	}
 }
 
@@ -106,7 +108,7 @@ func TestM6RetentionOutOfRangeOverWire(t *testing.T) {
 		prod.pubDelay(t, "orders", payload, 0)
 		prod.expectOK(t)
 	}
-	time.Sleep(150 * time.Millisecond) // let the sweeper run
+	h.broker.SweepRetentionNow() // deterministic reclaim, no ticker race
 
 	// c1 resumes from MsgID 1, now below the floor → OUT_OF_RANGE.
 	con2 := dial(t, h.addr)
@@ -134,7 +136,10 @@ func TestM6RetentionKeepsUnfiredDelayed(t *testing.T) {
 		prod.pubDelay(t, "orders", payload, 0)
 		prod.expectOK(t)
 	}
-	time.Sleep(150 * time.Millisecond) // sweeper runs; guard must keep seg 0
+	// Sweep now, while keepme (fires ~400ms out) is still un-fired: the
+	// delayed guard must keep seg 0. Deterministic — flood+sweep complete
+	// well under 400ms, so the guard is exercised, not a timing accident.
+	h.broker.SweepRetentionNow()
 
 	// A fresh consumer starts at the floor. If the guard held, the floor
 	// is still MsgID 0, so the first delivery (after the delay) is the
