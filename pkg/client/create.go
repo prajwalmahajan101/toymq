@@ -48,10 +48,7 @@ func (c *Client) Create(ctx context.Context, topic string, partitions int) error
 		case frameOK:
 			return nil
 		case frameErr:
-			if f.errCode == "TRANSPORT" {
-				return fmt.Errorf("%w: %s", ErrTransport, f.errMsg)
-			}
-			return fmt.Errorf("%w: %s %s", ErrServer, f.errCode, f.errMsg)
+			return serverErr(f)
 		default:
 			return errors.New("client: unexpected frame for CREATE response")
 		}

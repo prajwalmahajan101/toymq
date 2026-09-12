@@ -1,6 +1,9 @@
 package client
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Sentinel errors. Wrap with %w when returning so callers can
 // errors.Is against these.
@@ -30,3 +33,33 @@ var (
 	// bad/missing token from other handshake failures.
 	ErrAuth = errors.New("client: authentication failed")
 )
+
+// NotLeaderError is a typed ERR NOTLEADER <hint> from a replicated broker: a
+// leader-gated op (write, or a default SUB) reached a follower. Hint is the
+// raft node id of the believed leader ("" if unknown). ClusterClient matches
+// it with errors.As to resolve the hint and redirect; a bare Client surfaces
+// it so a caller can too (v3 M3, ADR 0032).
+type NotLeaderError struct {
+	Hint string
+}
+
+func (e *NotLeaderError) Error() string {
+	if e.Hint == "" {
+		return "client: not leader (no leader hint)"
+	}
+	return fmt.Sprintf("client: not leader, redirect to %q", e.Hint)
+}
+
+// serverErr converts a frameErr into the appropriate typed/sentinel error,
+// shared by every request path (PUB/SUB/ACK/NACK/CREATE/flow) so NOTLEADER
+// and TRANSPORT are classified identically everywhere.
+func serverErr(f frame) error {
+	switch f.errCode {
+	case "TRANSPORT":
+		return fmt.Errorf("%w: %s", ErrTransport, f.errMsg)
+	case "NOTLEADER":
+		return &NotLeaderError{Hint: f.errMsg}
+	default:
+		return fmt.Errorf("%w: %s %s", ErrServer, f.errCode, f.errMsg)
+	}
+}

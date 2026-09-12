@@ -10,7 +10,21 @@ import (
 // Sub subscribes consumerID to topic and returns a channel of
 // Deliveries. Only one subscription per Client; a second call
 // returns ErrSubInUse. The channel closes when the Client closes.
+// In a replicated cluster a Sub against a follower returns
+// *NotLeaderError (ADR 0032); use SubStale for a follower-local read.
 func (c *Client) Sub(ctx context.Context, topic, consumerID string) (<-chan Delivery, error) {
+	return c.sub(ctx, topic, consumerID, false)
+}
+
+// SubStale is Sub with the STALE flag: it subscribes against the connected
+// node without leader redirect, accepting the documented non-linearizable
+// follower-local read (v3 M3, ADR 0032). In standalone mode it is identical
+// to Sub.
+func (c *Client) SubStale(ctx context.Context, topic, consumerID string) (<-chan Delivery, error) {
+	return c.sub(ctx, topic, consumerID, true)
+}
+
+func (c *Client) sub(ctx context.Context, topic, consumerID string, stale bool) (<-chan Delivery, error) {
 	if c.isClosed() {
 		return nil, ErrClosed
 	}
@@ -45,7 +59,11 @@ func (c *Client) Sub(ctx context.Context, topic, consumerID string) (<-chan Deli
 			return nil, fmt.Errorf("%w: write TRACEPARENT: %w", ErrTransport, werr)
 		}
 	}
-	if _, werr := fmt.Fprintf(c.w, "SUB %s %s\n", topic, consumerID); werr != nil {
+	subLine := fmt.Sprintf("SUB %s %s\n", topic, consumerID)
+	if stale {
+		subLine = fmt.Sprintf("SUB %s %s STALE\n", topic, consumerID)
+	}
+	if _, werr := c.w.WriteString(subLine); werr != nil {
 		c.writeMu.Unlock()
 		c.pending.cancel(p)
 		c.rollbackSub()
@@ -74,10 +92,7 @@ func (c *Client) Sub(ctx context.Context, topic, consumerID string) (<-chan Deli
 			return ch, nil
 		case frameErr:
 			c.rollbackSub()
-			if f.errCode == "TRANSPORT" {
-				return nil, fmt.Errorf("%w: %s", ErrTransport, f.errMsg)
-			}
-			return nil, fmt.Errorf("%w: %s %s", ErrServer, f.errCode, f.errMsg)
+			return nil, serverErr(f)
 		default:
 			c.rollbackSub()
 			return nil, errors.New("client: unexpected frame for SUB response")
@@ -155,10 +170,7 @@ func (c *Client) sendAckLike(ctx context.Context, verb, consumerID string, parti
 			}
 			return nil
 		case frameErr:
-			if f.errCode == "TRANSPORT" {
-				return fmt.Errorf("%w: %s", ErrTransport, f.errMsg)
-			}
-			return fmt.Errorf("%w: %s %s", ErrServer, f.errCode, f.errMsg)
+			return serverErr(f)
 		default:
 			return errors.New("client: unexpected frame for ACK/NACK response")
 		}
