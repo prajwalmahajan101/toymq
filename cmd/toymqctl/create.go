@@ -8,7 +8,6 @@ import (
 	"strconv"
 
 	"github.com/prajwalmahajan101/toymq/internal/config"
-	"github.com/prajwalmahajan101/toymq/pkg/client"
 )
 
 func runCreate(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -34,14 +33,8 @@ func runCreate(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	topic := fs.Arg(0)
 
-	opts, err := conn.dialOptions()
-	if err != nil {
-		fmt.Fprintf(stderr, "toymqctl create: %v\n", err)
-		return exitUsage
-	}
-
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-	c, err := client.Dial(dialCtx, *addr, opts...)
+	c, err := conn.dial(dialCtx, *addr)
 	cancel()
 	if err != nil {
 		fmt.Fprintf(stderr, "toymqctl create: dial: %v\n", err)

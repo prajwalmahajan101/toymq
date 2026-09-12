@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/config"
-	"github.com/prajwalmahajan101/toymq/pkg/client"
 )
 
 const dialTimeout = 5 * time.Second
@@ -39,15 +38,9 @@ func runPub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		topic = fmt.Sprintf("%s#%d", topic, *partition)
 	}
 
-	opts, err := conn.dialOptions()
-	if err != nil {
-		fmt.Fprintf(stderr, "toymqctl pub: %v\n", err)
-		return exitUsage
-	}
-
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
-	c, err := client.Dial(dialCtx, *addr, opts...)
+	c, err := conn.dial(dialCtx, *addr)
 	if err != nil {
 		fmt.Fprintf(stderr, "toymqctl pub: dial: %v\n", err)
 		return exitErr

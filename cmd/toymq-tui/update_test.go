@@ -10,10 +10,12 @@ import (
 )
 
 // freshModel builds a model with no live client. Pure-Update tests
-// must not call any tea.Cmd that touches the client.
+// must not call any tea.Cmd that touches the client. A typed-nil
+// *client.Client (not an untyped nil) is passed so method values like
+// m.client.Err resolve without dereferencing a nil interface.
 func freshModel(t *testing.T) model {
 	t.Helper()
-	return newModel(context.Background(), nil, "127.0.0.1:0")
+	return newModel(context.Background(), (*client.Client)(nil), "127.0.0.1:0")
 }
 
 func key(s string) tea.KeyMsg {
