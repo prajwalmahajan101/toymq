@@ -108,7 +108,7 @@ func minorityLeaderPublishBlocked(t *testing.T, leader *clusterNode) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if _, _, _, err := leader.broker.PublishCtx(ctx, "orders", "", "", 0, false, []byte("split"), 0); err == nil {
+	if _, _, _, err := leader.broker.PublishCtx(ctx, "orders", "", "", 0, false, []byte("split"), 0, 0, 0); err == nil {
 		t.Fatalf("isolated minority leader %s accepted a write — split-brain", leader.id)
 	}
 }
@@ -247,7 +247,7 @@ func harnessPublish(nodes []*clusterNode, payload []byte, deadline time.Time) (u
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		id, _, _, err := leader.broker.PublishCtx(ctx, "orders", "", "", 0, false, payload, 0)
+		id, _, _, err := leader.broker.PublishCtx(ctx, "orders", "", "", 0, false, payload, 0, 0, 0)
 		cancel()
 		if err == nil {
 			return id, true

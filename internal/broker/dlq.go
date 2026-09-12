@@ -57,7 +57,7 @@ func (b *Broker) dlqMoveCtx(ctx context.Context, srcTopic string, payload []byte
 	// publish to the existing topic rather than failing the move.
 	_ = b.CreateTopic(dlqTopic, 1)
 
-	_, _, _, err := b.PublishCtx(ctx, dlqTopic, "", "", 0, false, payload, 0)
+	_, _, _, err := b.PublishCtx(ctx, dlqTopic, "", "", 0, false, payload, 0, 0, 0)
 	if err != nil {
 		slog.Error("dlq move", "src-topic", srcTopic, "dlq-topic", dlqTopic, "err", err)
 	}

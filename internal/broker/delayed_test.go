@@ -8,7 +8,7 @@ import (
 
 // bpubDelay publishes to partition 0 with a delivery delay (ms).
 func bpubDelay(b *Broker, topic string, payload []byte, delayMs uint64) (uint64, error) {
-	id, _, _, err := b.PublishCtx(context.Background(), topic, "", "", 0, false, payload, delayMs)
+	id, _, _, err := b.PublishCtx(context.Background(), topic, "", "", 0, false, payload, delayMs, 0, 0)
 	return id, err
 }
 

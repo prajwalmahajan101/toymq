@@ -39,7 +39,7 @@ func attachSingleNodeRaft(t *testing.T, b *Broker, dir string) raft.Node {
 	}
 	t.Cleanup(func() { _ = node.Stop() })
 
-	b.AttachRaft(node)
+	b.AttachRaft(node, "n1")
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {

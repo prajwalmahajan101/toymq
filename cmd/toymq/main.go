@@ -113,6 +113,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				logger.Warn("raft stop", "err", err)
 			}
 		}()
+		// Export live raft role/index/lag as scrape-time gauges (v3 M4, ADR
+		// 0033). Only when metrics are enabled — the collector reads broker
+		// state and is meaningless without a /metrics endpoint to scrape it.
+		if mtr != nil {
+			reg.MustRegister(broker.NewRaftCollector(b))
+		}
 	}
 
 	// Handshake / auth / TLS options (ADR 0020), shared by both listeners.
@@ -265,7 +271,7 @@ func attachRaft(ctx context.Context, b *broker.Broker, cfg *config.Config, logge
 		}
 	}
 
-	b.AttachRaft(node)
+	b.AttachRaft(node, cfg.NodeID)
 	logger.Info("replication enabled", "node-id", cfg.NodeID, "raft-dir", raftDir,
 		"peers", cfg.Peers, "raft-addr", cfg.RaftAddr)
 	return node, nil

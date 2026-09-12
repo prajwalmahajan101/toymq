@@ -51,6 +51,10 @@ func ParseCommandLine(line string, br *bufio.Reader, maxPayload int) (Command, e
 
 	case "TRACEPARENT":
 		return parseTraceparent(line)
+
+	case "INFO":
+		return parseInfo(fields)
+
 	default:
 		return nil, fmt.Errorf("%w: Unknown verb %q", ErrInvalidCommand, fields[0])
 	}
@@ -147,24 +151,48 @@ func readLine(br *bufio.Reader) (string, error) {
 }
 
 func parsePub(br *bufio.Reader, fields []string, maxPayload int) (Command, error) {
-	// PUB <topic> <dedupe-key> <routing-key> <payload_len> [DELAY <ms>]
-	// The optional trailing DELAY <ms> token (ADR 0025) holds the message
-	// from delivery; without it the frame is the pre-M6 5-field shape.
-	var delayMs uint64
-	switch len(fields) {
-	case 5:
-		// no delay
-	case 7:
-		if fields[5] != "DELAY" {
-			return nil, fmt.Errorf("%w: PUB 6th token must be DELAY, got %q", ErrInvalidCommand, fields[5])
+	// PUB <topic> <dedupe-key> <routing-key> <payload_len> [DELAY <ms>] [WAIT <n> <timeout-ms>]
+	// The 4 positional args are followed by any mix of the optional
+	// DELAY <ms> (ADR 0025) and WAIT <n> <timeout-ms> (ADR 0033) tokens, in
+	// any order. Without them the frame is the pre-M6 5-field shape.
+	if len(fields) < 5 {
+		return nil, fmt.Errorf("%w: PUB expects at least 4 args (topic dedupe-key routing-key payload_len), got %d", ErrInvalidCommand, len(fields)-1)
+	}
+	var (
+		delayMs       uint64
+		waitReplicas  int
+		waitTimeoutMs uint64
+	)
+	for i := 5; i < len(fields); {
+		switch fields[i] {
+		case "DELAY":
+			if i+1 >= len(fields) {
+				return nil, fmt.Errorf("%w: PUB DELAY needs <ms>", ErrInvalidCommand)
+			}
+			d, err := strconv.ParseUint(fields[i+1], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("%w: PUB DELAY ms: %v", ErrInvalidCommand, err)
+			}
+			delayMs = d
+			i += 2
+		case "WAIT":
+			if i+2 >= len(fields) {
+				return nil, fmt.Errorf("%w: PUB WAIT needs <n> <timeout-ms>", ErrInvalidCommand)
+			}
+			n, err := strconv.Atoi(fields[i+1])
+			if err != nil || n < 0 {
+				return nil, fmt.Errorf("%w: PUB WAIT n: %q", ErrInvalidCommand, fields[i+1])
+			}
+			t, err := strconv.ParseUint(fields[i+2], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("%w: PUB WAIT timeout-ms: %v", ErrInvalidCommand, err)
+			}
+			waitReplicas = n
+			waitTimeoutMs = t
+			i += 3
+		default:
+			return nil, fmt.Errorf("%w: PUB unknown trailing token %q (want DELAY or WAIT)", ErrInvalidCommand, fields[i])
 		}
-		d, err := strconv.ParseUint(fields[6], 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("%w: PUB DELAY ms: %v", ErrInvalidCommand, err)
-		}
-		delayMs = d
-	default:
-		return nil, fmt.Errorf("%w: PUB expects 4 args (topic dedupe-key routing-key payload_len) with optional DELAY <ms>, got %d", ErrInvalidCommand, len(fields)-1)
 	}
 	topic, partition, star, explicit, err := parseTopicPartition(fields[1])
 	if err != nil {
@@ -204,14 +232,34 @@ func parsePub(br *bufio.Reader, fields []string, maxPayload int) (Command, error
 		return nil, ErrBadFraming
 	}
 	return PubCommand{
-		Topic:        topic,
-		DedupeKey:    key,
-		RoutingKey:   routingKey,
-		Partition:    partition,
-		PartitionSet: explicit,
-		Payload:      payload,
-		DelayMs:      delayMs,
+		Topic:         topic,
+		DedupeKey:     key,
+		RoutingKey:    routingKey,
+		Partition:     partition,
+		PartitionSet:  explicit,
+		Payload:       payload,
+		DelayMs:       delayMs,
+		WaitReplicas:  waitReplicas,
+		WaitTimeoutMs: waitTimeoutMs,
 	}, nil
+}
+
+// parseInfo parses INFO [<section>] (ADR 0033). Section defaults to
+// "replication"; only that section exists today, so anything else is
+// rejected rather than silently returning an empty block.
+func parseInfo(fields []string) (Command, error) {
+	section := "replication"
+	switch len(fields) {
+	case 1:
+	case 2:
+		section = fields[1]
+	default:
+		return nil, fmt.Errorf("%w: INFO expects at most one section arg, got %d", ErrInvalidCommand, len(fields)-1)
+	}
+	if section != "replication" {
+		return nil, fmt.Errorf("%w: INFO unknown section %q (want replication)", ErrInvalidCommand, section)
+	}
+	return InfoCommand{Section: section}, nil
 }
 
 func parseSub(fields []string) (Command, error) {

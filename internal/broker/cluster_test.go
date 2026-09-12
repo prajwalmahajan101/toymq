@@ -105,7 +105,7 @@ func newCluster(t *testing.T, n int) []*clusterNode {
 		if err := node.Start(context.Background()); err != nil {
 			t.Fatalf("node.Start %s: %v", id, err)
 		}
-		b.AttachRaft(node)
+		b.AttachRaft(node, id)
 
 		cn := &clusterNode{id: id, broker: b, node: node, part: transport}
 		nodes = append(nodes, cn)
