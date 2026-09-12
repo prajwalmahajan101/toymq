@@ -44,6 +44,7 @@
 | 0030 | [Cluster mode: peer transport, membership flags & the NOTLEADER write gate](./0030-cluster-mode-peer-transport.md) | Accepted |
 | 0031 | [Partition-heal + linearizability harness (v3 M2b)](./0031-partition-heal-linearizability-harness.md) | Accepted |
 | 0032 | [Client routing: write redirect + leader-default read model (v3 M3)](./0032-client-routing-read-model.md) | Accepted |
+| 0033 | [Replication acknowledgement (WAIT) & cluster telemetry model (v3 M4)](./0033-replication-ack-and-telemetry-model.md) | Accepted |
 
 Each ADR is a short snapshot of *why* a decision was made, captured at the
 time the decision landed in code. They are not living docs — when a decision
