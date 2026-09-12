@@ -18,7 +18,7 @@ func TestBackoffDelayBounds(t *testing.T) {
 		{3, 40 * time.Millisecond},
 		{4, 80 * time.Millisecond},
 		{5, 160 * time.Millisecond},
-		{6, 200 * time.Millisecond}, // clamped at max
+		{6, 200 * time.Millisecond},  // clamped at max
 		{60, 200 * time.Millisecond}, // huge shift clamped, no overflow to negative
 	}
 	for _, c := range cases {

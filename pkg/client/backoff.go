@@ -15,18 +15,18 @@ type backoff struct {
 	max      time.Duration // ceiling on the exponential term
 	attempts int           // total tries (attempt 0 is the first, no wait)
 
-	randFloat func() float64             // [0,1); defaults to rand
+	randFloat func() float64 // [0,1); defaults to rand
 	sleep     func(time.Duration) <-chan time.Time
 }
 
-func newBackoff(base, max time.Duration, attempts int) *backoff {
+func newBackoff(base, maxDelay time.Duration, attempts int) *backoff {
 	if attempts < 1 {
 		attempts = 1
 	}
-	rng := rand.New(rand.NewSource(1))
+	rng := rand.New(rand.NewSource(1)) //nolint:gosec // jitter for retry backoff, not security-sensitive
 	return &backoff{
 		base:      base,
-		max:       max,
+		max:       maxDelay,
 		attempts:  attempts,
 		randFloat: rng.Float64,
 		sleep:     time.After,
