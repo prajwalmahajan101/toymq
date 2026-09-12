@@ -95,10 +95,7 @@ func resolvePubResp(f frame) (uint64, bool, error) {
 	case frameDup:
 		return f.dupID, true, nil
 	case frameErr:
-		if f.errCode == "TRANSPORT" {
-			return 0, false, fmt.Errorf("%w: %s", ErrTransport, f.errMsg)
-		}
-		return 0, false, fmt.Errorf("%w: %s %s", ErrServer, f.errCode, f.errMsg)
+		return 0, false, serverErr(f)
 	}
 	return 0, false, errors.New("client: unexpected frame for PUB response")
 }
