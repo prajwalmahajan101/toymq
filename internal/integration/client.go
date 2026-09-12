@@ -115,6 +115,24 @@ func (c *testClient) pubDelay(t *testing.T, topic string, payload []byte, delayM
 	}
 }
 
+// pubWait publishes with a WAIT <n> <timeout-ms> replication barrier
+// (v3 M4, ADR 0033).
+func (c *testClient) pubWait(t *testing.T, topic string, payload []byte, waitReplicas int, waitTimeoutMs uint64) {
+	t.Helper()
+	if _, err := fmt.Fprintf(c.w, "PUB %s - - %d WAIT %d %d\n", topic, len(payload), waitReplicas, waitTimeoutMs); err != nil {
+		t.Fatalf("write PUB header: %v", err)
+	}
+	if _, err := c.w.Write(payload); err != nil {
+		t.Fatalf("write PUB payload: %v", err)
+	}
+	if err := c.w.WriteByte('\n'); err != nil {
+		t.Fatalf("write PUB trailer: %v", err)
+	}
+	if err := c.w.Flush(); err != nil {
+		t.Fatalf("flush PUB: %v", err)
+	}
+}
+
 // create sends CREATE <topic> PARTITIONS <n>.
 func (c *testClient) create(t *testing.T, topic string, partitions int) {
 	t.Helper()
@@ -181,6 +199,36 @@ func (c *testClient) controlVerb(t *testing.T, verb string) {
 	if err := c.w.Flush(); err != nil {
 		t.Fatalf("flush %s: %v", verb, err)
 	}
+}
+
+// info sends INFO replication and parses the "INFO <n>\n" + n key:value
+// lines block into a map (v3 M4, ADR 0033).
+func (c *testClient) info(t *testing.T) map[string]string {
+	t.Helper()
+	if _, err := fmt.Fprintf(c.w, "INFO replication\n"); err != nil {
+		t.Fatalf("write INFO: %v", err)
+	}
+	if err := c.w.Flush(); err != nil {
+		t.Fatalf("flush INFO: %v", err)
+	}
+	header := c.readResponseLine(t)
+	if !strings.HasPrefix(header, "INFO ") {
+		t.Fatalf("expected INFO header, got %q", header)
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(header, "INFO "))
+	if err != nil || n < 0 {
+		t.Fatalf("parse INFO count %q: %v", header, err)
+	}
+	out := make(map[string]string, n)
+	for range n {
+		line := c.readLine(t)
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			t.Fatalf("malformed INFO line %q", line)
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // ---- reads ------------------------------------------------------------------
