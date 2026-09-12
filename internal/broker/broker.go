@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,33 @@ const (
 	// constructors that don't take an explicit window (ADR 0022).
 	defaultRecvWindow = 256
 )
+
+// ErrWaitTimeout is returned by PublishCtx when a PUB … WAIT <n> <ms> barrier
+// is not met within the timeout (v3 M4, ADR 0033). The write is already
+// committed and quorum-durable — only the caller-requested replication factor
+// was not reached in time.
+var ErrWaitTimeout = errors.New("broker: replication wait timeout")
+
+// ReplicationStatus is a point-in-time snapshot of the node's raft replication
+// state, formatted by the server into an INFO replication response (v3 M4, ADR
+// 0033). In standalone mode Role is "standalone" and every other field is zero.
+type ReplicationStatus struct {
+	Role         string // "leader" | "follower" | "candidate" | "standalone"
+	LeaderID     string // best-known leader id, "" if unknown
+	Term         uint64
+	CommitIndex  uint64
+	ApplyIndex   uint64
+	LastLogIndex uint64
+	Peers        []PeerStatus // populated on a leader only (MatchIndex is leader-only)
+}
+
+// PeerStatus is one follower's replication position as seen by the leader.
+// LagEntries = leader LastLogIndex − this peer's MatchIndex.
+type PeerStatus struct {
+	ID         string
+	MatchIndex uint64
+	LagEntries uint64
+}
 
 // Broker is the in-process facade over the lazy topic registry. It
 // owns the persist and redelivery loops and the topic-recovery walk
@@ -94,6 +122,12 @@ type Broker struct {
 	// byte-identical to v2.
 	raft raft.Node
 
+	// selfID is this node's raft NodeID, captured at AttachRaft. Needed to
+	// exclude self from Status().MatchIndex, which — contrary to a first
+	// reading of the toyraft docs — includes the leader's own entry (v3 M4
+	// finding, TOYRAFT-MIGRATION-REPORT). Empty in standalone mode.
+	selfID string
+
 	// appliedHighWater is the highest toyraft log index whose PUB is already
 	// durably recorded in a WAL (v3 M1, ADR 0028). It is computed during
 	// recovery from the RaftIndex stamped in each replicated record and lets
@@ -107,9 +141,11 @@ type Broker struct {
 // AttachRaft switches the broker into replicated mode. After this call every
 // mutating command is proposed through node and applied via the state machine
 // on every cluster member rather than mutating broker state inline. Called once
-// at startup by cmd/toymq after raft.New — never mid-flight.
-func (b *Broker) AttachRaft(node raft.Node) {
+// at startup by cmd/toymq after raft.New — never mid-flight. selfID is this
+// node's raft NodeID, used to exclude self from replication counts.
+func (b *Broker) AttachRaft(node raft.Node, selfID string) {
 	b.raft = node
+	b.selfID = selfID
 }
 
 // LeaderHint returns the raft node's best-known current leader id, or "" when
@@ -129,6 +165,55 @@ func (b *Broker) LeaderHint() string {
 // (v3 M3, ADR 0032).
 func (b *Broker) IsLeader() bool {
 	return b.raft == nil || b.raft.Status().Role == raft.Leader
+}
+
+// ReplicationStatus snapshots the node's raft replication state for INFO
+// replication (v3 M4, ADR 0033). Standalone (raft == nil) reports
+// Role "standalone" and no peers. Peers are populated only on a leader, since
+// Status().MatchIndex is leader-only (nil on a follower).
+func (b *Broker) ReplicationStatus() ReplicationStatus {
+	if b.raft == nil {
+		return ReplicationStatus{Role: "standalone"}
+	}
+	st := b.raft.Status()
+	rs := ReplicationStatus{
+		Role:         roleString(st.Role),
+		LeaderID:     string(st.LeaderHint),
+		Term:         uint64(st.Term),
+		CommitIndex:  uint64(st.CommitIndex),
+		ApplyIndex:   uint64(st.ApplyIndex),
+		LastLogIndex: uint64(st.LastLogIndex),
+	}
+	for id, mi := range st.MatchIndex {
+		if string(id) == b.selfID {
+			continue // MatchIndex includes the leader's own entry; exclude it
+		}
+		lag := uint64(0)
+		if uint64(st.LastLogIndex) > uint64(mi) {
+			lag = uint64(st.LastLogIndex) - uint64(mi)
+		}
+		rs.Peers = append(rs.Peers, PeerStatus{
+			ID:         string(id),
+			MatchIndex: uint64(mi),
+			LagEntries: lag,
+		})
+	}
+	sort.Slice(rs.Peers, func(i, j int) bool { return rs.Peers[i].ID < rs.Peers[j].ID })
+	return rs
+}
+
+// roleString maps a raft.Role to its INFO wire label.
+func roleString(r raft.Role) string {
+	switch r {
+	case raft.Leader:
+		return "leader"
+	case raft.Follower:
+		return "follower"
+	case raft.Candidate:
+		return "candidate"
+	default:
+		return "unknown"
+	}
 }
 
 // NotLeaderHint reports whether err is a raft rejection the client should
@@ -163,7 +248,7 @@ func (b *Broker) NotLeaderHint(err error) (string, bool) {
 // and reads the WAL-assigned MsgID back from Propose's result — toyraft rc.3
 // returns StateMachine.Apply's value as Propose's third return, and Propose
 // blocks until Apply has run on this node (ADR 0029).
-func (b *Broker) proposePublish(ctx context.Context, topic string, partition int, dedupeKey string, payload []byte, delayMs uint64) (msgID uint64, dup bool, err error) {
+func (b *Broker) proposePublish(ctx context.Context, topic string, partition int, dedupeKey string, payload []byte, delayMs uint64) (msgID uint64, dup bool, raftIndex uint64, err error) {
 	now := time.Now().UnixNano()
 	var visibleAtNs uint64
 	if delayMs > 0 {
@@ -178,14 +263,14 @@ func (b *Broker) proposePublish(ctx context.Context, topic string, partition int
 		VisibleAtNs: visibleAtNs,
 		Payload:     payload,
 	}
-	_, _, res, err := b.raft.Propose(ctx, replication.Encode(env))
+	idx, _, res, err := b.raft.Propose(ctx, replication.Encode(env))
 	if err != nil {
-		return 0, false, err
+		return 0, false, 0, err
 	}
 	// KindPublish's Apply returns an ApplyResult; ACK/NACK/CREATE return nil
 	// (see proposeMutation), so only the publish path asserts.
 	ar := res.(replication.ApplyResult)
-	return ar.MsgID, ar.Dup, nil
+	return ar.MsgID, ar.Dup, uint64(idx), nil
 }
 
 // proposeMutation Proposes a result-less command (ACK/NACK/CREATE) and returns
@@ -603,7 +688,7 @@ func (b *Broker) TopicPartitions(topic string) (int, error) {
 // non-empty dedupeKey activates per-partition dedupe. Equivalent to
 // PublishCtx(context.Background(), ...).
 func (b *Broker) Publish(topic, dedupeKey, routingKey string, partition int, partitionSet bool, payload []byte) (uint64, int, bool, error) {
-	return b.PublishCtx(context.Background(), topic, dedupeKey, routingKey, partition, partitionSet, payload, 0)
+	return b.PublishCtx(context.Background(), topic, dedupeKey, routingKey, partition, partitionSet, payload, 0, 0, 0)
 }
 
 // PublishCtx is Publish with a context that carries the OTel span and an
@@ -611,7 +696,14 @@ func (b *Broker) Publish(topic, dedupeKey, routingKey string, partition int, par
 // VisibleAtNs to now+delay so delivery holds it until then. The broker
 // creates a "broker.publish" span when a tracer is wired; otherwise the
 // span is a no-op and ctx is only used as the cancel boundary.
-func (b *Broker) PublishCtx(ctx context.Context, topic, dedupeKey, routingKey string, partition int, partitionSet bool, payload []byte, delayMs uint64) (uint64, int, bool, error) {
+//
+// waitReplicas > 0 (v3 M4, ADR 0033) turns the publish into a replicated
+// durability barrier: after Propose commits, the leader holds the return
+// until waitReplicas *followers* durably hold the write's log index or
+// waitTimeout elapses. On timeout it returns the assigned MsgID with
+// ErrWaitTimeout — the write is committed, only the requested replication
+// factor was not reached. Ignored in standalone mode (raft == nil).
+func (b *Broker) PublishCtx(ctx context.Context, topic, dedupeKey, routingKey string, partition int, partitionSet bool, payload []byte, delayMs uint64, waitReplicas int, waitTimeout time.Duration) (uint64, int, bool, error) {
 	ctx, span := b.startSpan(ctx, "broker.publish",
 		tracing.AttrTopic.String(topic),
 		tracing.AttrPayloadBytes.Int(len(payload)),
@@ -632,24 +724,83 @@ func (b *Broker) PublishCtx(ctx context.Context, topic, dedupeKey, routingKey st
 		b.metrics.IncPublishFailure(topic)
 		return 0, 0, false, err
 	}
-	var id uint64
-	var dup bool
+	var (
+		id        uint64
+		dup       bool
+		raftIndex uint64
+	)
 	if b.raft == nil {
 		id, dup, err = p.publishCtx(ctx, dedupeKey, payload, delayMs, b.metrics)
 	} else {
-		id, dup, err = b.proposePublish(ctx, topic, p.id, dedupeKey, payload, delayMs)
+		id, dup, raftIndex, err = b.proposePublish(ctx, topic, p.id, dedupeKey, payload, delayMs)
 	}
-	if err == nil {
-		span.SetAttributes(tracing.AttrDuplicate.Bool(dup))
-		if dup {
-			b.metrics.IncPublishDup(topic)
-		} else {
-			b.metrics.IncPublish(topic, len(payload))
-		}
-	} else {
+	if err != nil {
 		b.metrics.IncPublishFailure(topic)
+		return id, p.id, dup, err
 	}
-	return id, p.id, dup, err
+	span.SetAttributes(tracing.AttrDuplicate.Bool(dup))
+	if dup {
+		b.metrics.IncPublishDup(topic)
+	} else {
+		b.metrics.IncPublish(topic, len(payload))
+	}
+	// Replication barrier (ADR 0033). Skipped for standalone, for the
+	// no-barrier default (waitReplicas == 0), and for a duplicate (no new
+	// entry to wait on — the original is already committed).
+	if b.raft != nil && waitReplicas > 0 && !dup {
+		if err := b.waitForReplication(ctx, raftIndex, waitReplicas, waitTimeout); err != nil {
+			return id, p.id, dup, err
+		}
+	}
+	return id, p.id, dup, nil
+}
+
+// waitForReplication blocks until at least n followers (the leader excludes
+// itself) durably hold the entry at raftIndex, or timeout/ctx fires (v3 M4,
+// ADR 0033). It polls Status().MatchIndex — leader-only, per-peer, self
+// excluded — so counting peers with MatchIndex >= raftIndex is the true
+// follower-ack count; it never over-reports. Returns ErrWaitTimeout when the
+// bar is not met in time.
+//
+// ponytail: 5ms poll of MatchIndex. toyraft exposes no commit-notify hook;
+// switch to it if one lands (recorded in TOYRAFT-MIGRATION-REPORT).
+func (b *Broker) waitForReplication(ctx context.Context, raftIndex uint64, n int, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if b.followerAckCount(raftIndex) >= n {
+			b.metrics.IncWait("satisfied")
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			b.metrics.IncWait("timeout")
+			return ErrWaitTimeout
+		case <-deadline.C:
+			b.metrics.IncWait("timeout")
+			return ErrWaitTimeout
+		case <-ticker.C:
+		}
+	}
+}
+
+// followerAckCount returns how many peers have durably acknowledged the entry
+// at raftIndex, per the leader's MatchIndex snapshot (nil on a follower → 0).
+func (b *Broker) followerAckCount(raftIndex uint64) int {
+	st := b.raft.Status()
+	acked := 0
+	for id, mi := range st.MatchIndex {
+		if string(id) == b.selfID {
+			continue // exclude the leader's own entry (v3 M4 finding)
+		}
+		if uint64(mi) >= raftIndex {
+			acked++
+		}
+	}
+	return acked
 }
 
 // Close cancels the redelivery and persist loops (in that order so

@@ -7,7 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/prajwalmahajan101/toymq/internal/broker"
 	"github.com/prajwalmahajan101/toymq/internal/metrics"
@@ -212,7 +214,7 @@ func (s *Session) handleParsed(ctx context.Context, cmd proto.Command, err error
 // knownVerbs is used only to label command_errors: on a parse failure the
 // Command is nil, so the verb is recovered from the error text (which
 // echoes the offending verb) for a low-cardinality metric label (ADR 0027).
-var knownVerbs = []string{"PUB", "SUB", "ACK", "NACK", "CREATE", "PAUSE", "RESUME", "TRACEPARENT", "HELLO"}
+var knownVerbs = []string{"PUB", "SUB", "ACK", "NACK", "CREATE", "PAUSE", "RESUME", "TRACEPARENT", "INFO", "HELLO"}
 
 // verbOf returns the first known verb mentioned in reason, or "unknown".
 func verbOf(reason string) string {
@@ -252,7 +254,40 @@ func (s *Session) handleCommand(ctx context.Context, cmd proto.Command) {
 		// send no response frame (ADR 0026).
 		s.pendingTraceparent = c.Traceparent
 		s.pendingTracestate = c.Tracestate
+	case proto.InfoCommand:
+		_ = c // only section "replication" exists; validated by the parser
+		s.handleInfo()
 	}
+}
+
+// handleInfo answers INFO replication with a self-delimiting key:value block
+// built from the broker's live raft state (v3 M4, ADR 0033). It is a read of
+// local state, so it is served on any node (leader or follower) without a
+// NOTLEADER redirect.
+func (s *Session) handleInfo() {
+	st := s.broker.ReplicationStatus()
+	lines := []string{
+		"role:" + st.Role,
+	}
+	if st.Role != "standalone" {
+		lines = append(lines,
+			"leader:"+st.LeaderID,
+			"term:"+strconv.FormatUint(st.Term, 10),
+			"commit_index:"+strconv.FormatUint(st.CommitIndex, 10),
+			"apply_index:"+strconv.FormatUint(st.ApplyIndex, 10),
+			"last_log_index:"+strconv.FormatUint(st.LastLogIndex, 10),
+			"connected_replicas:"+strconv.Itoa(len(st.Peers)),
+		)
+		for _, p := range st.Peers {
+			lines = append(lines,
+				"replica_"+p.ID+"_match_index:"+strconv.FormatUint(p.MatchIndex, 10),
+				"replica_"+p.ID+"_lag_entries:"+strconv.FormatUint(p.LagEntries, 10),
+			)
+		}
+	}
+	s.sendResp(func(bw *bufio.Writer) error {
+		return proto.WriteInfo(bw, lines)
+	})
 }
 
 // takeTraceCtx derives a context from parent carrying the remote span
@@ -307,8 +342,19 @@ func (s *Session) sendIfNotLeader(err error) bool {
 }
 
 func (s *Session) handlePub(ctx context.Context, c proto.PubCommand) {
-	id, _, dup, err := s.broker.PublishCtx(s.takeTraceCtx(ctx), c.Topic, c.DedupeKey, c.RoutingKey, c.Partition, c.PartitionSet, c.Payload, c.DelayMs)
+	waitTimeout := time.Duration(c.WaitTimeoutMs) * time.Millisecond
+	id, _, dup, err := s.broker.PublishCtx(s.takeTraceCtx(ctx), c.Topic, c.DedupeKey, c.RoutingKey, c.Partition, c.PartitionSet, c.Payload, c.DelayMs, c.WaitReplicas, waitTimeout)
 	if err != nil {
+		// A WAIT-barrier timeout is not a publish failure: the write is
+		// committed and quorum-durable, only the requested replication factor
+		// was not met in time. Surface the assigned MsgID so the caller knows
+		// the write landed (v3 M4, ADR 0033).
+		if errors.Is(err, broker.ErrWaitTimeout) {
+			s.sendResp(func(bw *bufio.Writer) error {
+				return proto.WriteErr(bw, proto.ErrCodeWaitTimeout, strconv.FormatUint(id, 10))
+			})
+			return
+		}
 		if s.sendIfNotLeader(err) {
 			return
 		}

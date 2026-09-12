@@ -99,6 +99,32 @@ func WriteErr(bw *bufio.Writer, code, reason string) error {
 	return bw.Flush()
 }
 
+// WriteInfo writes an INFO response block and flushes (v3 M4, ADR 0033):
+// a "INFO <numlines>\n" header followed by that many "key:value\n" lines.
+// The explicit line count keeps the block self-delimiting on the
+// line-oriented wire, so the client reads exactly numlines follow-up lines
+// without a sentinel.
+func WriteInfo(bw *bufio.Writer, lines []string) error {
+	if _, err := bw.WriteString("INFO "); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString(strconv.Itoa(len(lines))); err != nil {
+		return err
+	}
+	if err := bw.WriteByte('\n'); err != nil {
+		return err
+	}
+	for _, l := range lines {
+		if _, err := bw.WriteString(l); err != nil {
+			return err
+		}
+		if err := bw.WriteByte('\n'); err != nil {
+			return err
+		}
+	}
+	return bw.Flush()
+}
+
 // WriteDup writes "DUP <originalMsgID>\n" and flushes — the response
 // when a PUB hits the dedupe index. The caller learns the original
 // MsgID and can treat the publish as idempotently successful.

@@ -47,6 +47,12 @@ type Metrics struct {
 	WALSegments            *prometheus.GaugeVec
 	CommandErrorsTotal     *prometheus.CounterVec
 	PublishFailureTotal    *prometheus.CounterVec
+
+	// M4 — replication ack telemetry (ADR 0033). WaitTotal counts PUB … WAIT
+	// barriers by outcome; the raft role/index/lag gauges are exported by a
+	// separate scrape-time collector (broker.RaftCollector) registered in
+	// cmd/toymq, since they read live raft Status().
+	WaitTotal *prometheus.CounterVec
 }
 
 // NewRegistry returns a fresh Prometheus registry pre-populated with
@@ -176,6 +182,11 @@ func New(r *prometheus.Registry) *Metrics {
 			Name: "toymq_publish_failure_total",
 			Help: "Publishes rejected or failed, by topic.",
 		}, []string{"topic"}),
+
+		WaitTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "toymq_wait_total",
+			Help: "PUB … WAIT replication barriers, by result (satisfied|timeout).",
+		}, []string{"result"}),
 	}
 
 	r.MustRegister(
@@ -201,6 +212,7 @@ func New(r *prometheus.Registry) *Metrics {
 		m.WALSegments,
 		m.CommandErrorsTotal,
 		m.PublishFailureTotal,
+		m.WaitTotal,
 	)
 	return m
 }
@@ -379,6 +391,14 @@ func (m *Metrics) IncPublishFailure(topic string) {
 		return
 	}
 	m.PublishFailureTotal.WithLabelValues(topic).Inc()
+}
+
+// IncWait bumps the WAIT-barrier counter for a result ("satisfied"|"timeout").
+func (m *Metrics) IncWait(result string) {
+	if m == nil {
+		return
+	}
+	m.WaitTotal.WithLabelValues(result).Inc()
 }
 
 // IncSessions / DecSessions / IncSubs / DecSubs maintain the

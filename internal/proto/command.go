@@ -23,6 +23,21 @@ type PubCommand struct {
 	// held from delivery for this many milliseconds (ADR 0025). 0 (the
 	// default, token absent) delivers immediately.
 	DelayMs uint64
+
+	// WaitReplicas / WaitTimeoutMs carry the optional trailing
+	// WAIT <n> <timeout-ms> token (v3 M4, ADR 0033): the leader holds OK
+	// until n *followers* (leader excluded) durably hold the write's log
+	// index, or WaitTimeoutMs elapses. WaitReplicas == 0 (token absent) is
+	// the leader-only path — no barrier, today's behaviour.
+	WaitReplicas  int
+	WaitTimeoutMs uint64
+}
+
+// InfoCommand is a parsed INFO frame: INFO [<section>] (v3 M4, ADR 0033).
+// Section defaults to "replication" when omitted. Member of the sealed
+// Command union (ADR 0004).
+type InfoCommand struct {
+	Section string
 }
 
 // SubCommand is a parsed SUB frame. AllPartitions is set by SUB <topic>
@@ -91,6 +106,7 @@ func (CreateCommand) isCommand()      {}
 func (PauseCommand) isCommand()       {}
 func (ResumeCommand) isCommand()      {}
 func (TraceparentCommand) isCommand() {}
+func (InfoCommand) isCommand()        {}
 
 // Hello is the parsed HELLO handshake frame. It is deliberately NOT a
 // member of the Command union: HELLO is a one-shot handshake phase that
