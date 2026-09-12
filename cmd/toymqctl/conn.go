@@ -13,6 +13,8 @@ import (
 // subcommand works against either without caring which (v3 M3, ADR 0032).
 type brokerConn interface {
 	PubDelay(ctx context.Context, topic, dedupeKey, routingKey string, payload []byte, delayMs uint64) (uint64, bool, error)
+	PubWait(ctx context.Context, topic, dedupeKey, routingKey string, payload []byte, waitReplicas int, waitTimeoutMs uint64) (uint64, bool, error)
+	Info(ctx context.Context) (client.ReplicationInfo, error)
 	Create(ctx context.Context, topic string, partitions int) error
 	Ack(ctx context.Context, consumerID string, partition int, msgID uint64) error
 	Nack(ctx context.Context, consumerID string, partition int, msgID uint64) error

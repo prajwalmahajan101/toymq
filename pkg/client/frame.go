@@ -17,6 +17,7 @@ const (
 	frameDup
 	frameErr
 	frameMsg
+	frameInfo
 )
 
 // frame is one parsed wire frame. Only the fields meaningful for its
@@ -31,6 +32,7 @@ type frame struct {
 	msgPartition int
 	msgID        uint64
 	payload      []byte
+	infoLines    []string
 }
 
 // readFrame consumes exactly one frame from r. Returns io.EOF if the
@@ -95,6 +97,23 @@ func readFrame(r *bufio.Reader) (frame, error) {
 			return frame{}, errors.New("MSG trailer not newline")
 		}
 		return frame{kind: frameMsg, msgTopic: fields[1], msgPartition: partition, msgID: id, payload: payload}, nil
+
+	case strings.HasPrefix(line, "INFO "):
+		// "INFO <numlines>\n" then exactly numlines "key:value\n" lines
+		// (v3 M4, ADR 0033). The count makes the block self-delimiting.
+		n, err := strconv.Atoi(strings.TrimPrefix(line, "INFO "))
+		if err != nil || n < 0 {
+			return frame{}, fmt.Errorf("parse INFO count %q: %w", line, err)
+		}
+		lines := make([]string, 0, n)
+		for i := range n {
+			l, err := r.ReadString('\n')
+			if err != nil {
+				return frame{}, fmt.Errorf("read INFO line %d: %w", i, err)
+			}
+			lines = append(lines, strings.TrimRight(l, "\r\n"))
+		}
+		return frame{kind: frameInfo, infoLines: lines}, nil
 	}
 
 	return frame{}, fmt.Errorf("unknown frame %q", line)
