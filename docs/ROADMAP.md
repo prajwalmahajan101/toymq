@@ -484,7 +484,7 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
   writes converge after a mid-run leader kill.
 
 ## v3 M4 — `WAIT` + INFO replication + cluster observability
-**Branch:** `feat/wait-info-repl` · **Depends on:** v3 M2 (reads `Status().MatchIndex`) · **ADR:** 0021 — replication acknowledgement & telemetry model
+**Branch:** `feat/wait-info-repl` · **Depends on:** v3 M2 (reads `Status().MatchIndex`) · **ADR:** [0033](./adr/0033-replication-ack-and-telemetry-model.md) — replication acknowledgement & telemetry model
 - `PUB … WAIT <numreplicas> <timeout-ms>` — leader returns `OK` only after
   `numreplicas` followers acknowledge the write's log index (driven by leader
   `MatchIndex`); truthful, never over-reports. `WAIT 0` = leader-only (today's
@@ -545,7 +545,7 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
 | v3 M1 | Raft embedding + single-node replicated path | 📋 Planned (buildable now) | — | — |
 | v3 M2 | Multi-node replication + leader election | 🚧 M2a+M2b done (`feat/cluster`, ADR 0030/0031) | — | — |
 | v3 M3 | Client routing: write redirect + read model | ✅ Done (`feat/cluster-routing`, ADR 0032) | — | — |
-| v3 M4 | `WAIT` + INFO replication + cluster observability | 📋 Planned (buildable now) | — | — |
+| v3 M4 | `WAIT` + INFO replication + cluster observability | ✅ Done (`feat/wait-info-repl`, ADR 0033) | — | — |
 | v3 M5 | TUI v3: cluster view | 📋 Planned | — | — |
 | v3 M6 | Bench + dogfood report + polish + v3.0.0 | 📋 Planned | — | `v3.0.0` |
 

@@ -150,8 +150,9 @@ ends with `\n`. Bytes between framing are arbitrary.
 |---|---|---|
 | `HELLO` | `HELLO <version> [AUTH <token>]\n` | **First line on every connection** (v2.0). Server replies `HELLO <version> OK\n`. `AUTH` is required when the broker enables tokens. See [Handshake, auth, and TLS](#handshake-auth-and-tls-v20). |
 | `CREATE` | `CREATE <topic> PARTITIONS <n>\n` | Creates `<topic>` with `<n>` partitions (v2 M4). Idempotent for the same count; a different count is an `ERR`. Auto-created topics use `--default-partitions`. |
-| `PUB` | `PUB <topic> <key> <routing-key> <len> [DELAY <ms>]\n<payload>\n` | `<key>` is the dedupe key (`-` = none). `<routing-key>` (`-` = none) hashes to a partition (`fnv1a % N`); empty round-robins. `PUB <topic>#<n> …` pins partition `n`. `<len>` is the payload byte length. Optional trailing `DELAY <ms>` holds the message from delivery for `<ms>` milliseconds (v2 M6). |
+| `PUB` | `PUB <topic> <key> <routing-key> <len> [DELAY <ms>] [WAIT <n> <timeout-ms>]\n<payload>\n` | `<key>` is the dedupe key (`-` = none). `<routing-key>` (`-` = none) hashes to a partition (`fnv1a % N`); empty round-robins. `PUB <topic>#<n> …` pins partition `n`. `<len>` is the payload byte length. Optional trailing `DELAY <ms>` holds the message from delivery for `<ms>` milliseconds (v2 M6). Optional `WAIT <n> <timeout-ms>` holds `OK` until `<n>` followers replicate the write, else `ERR WAIT_TIMEOUT <msg-id>` (v3 M4; see [Cluster consistency](#cluster-consistency-v3-m4)). |
 | `SUB` | `SUB <topic> <consumer-id>\n` | `<topic>` = all partitions (fan-in); `<topic>#<n>` = one; `<topic>#*` = all. Replays each partition from its `lastAcked + 1`. |
+| `INFO` | `INFO [replication]\n` | Returns `INFO <numlines>\n` then `<numlines>` `key:value` lines describing this node's replication state — role, leader, commit/apply/log offsets, per-follower entry-lag (v3 M4). `role:standalone` when not replicated. Served on any node. |
 | `ACK` | `ACK <consumer-id> <partition> <msg-id>\n` | Confirms delivery on `<partition>` (MsgIDs are partition-local); advances that partition's `lastAcked` when the prefix is contiguous. |
 | `NACK` | `NACK <consumer-id> <partition> <msg-id>\n` | Returns the msg to pending; redelivered on the next `runDelivery` iteration. |
 | `PAUSE` | `PAUSE\n` | Suspends delivery for this connection's subscription — every partition of a `SUB #*` (v2 M5). Halts redelivery too. `ERR NO_SUB` without a prior `SUB`. |
@@ -163,8 +164,9 @@ ends with `\n`. Bytes between framing are arbitrary.
 |---|---|---|
 | `OK` | `OK <msg-id>\n` | Success. For PUB the id is freshly assigned; for SUB it is `0` (placeholder); for ACK/NACK it echoes the target id. |
 | `DUP` | `DUP <msg-id>\n` | Dedupe LRU hit; the original assignment for this key is returned. No new WAL write. |
-| `ERR` | `ERR <code> <reason>\n` | Server error. `<code>` is a stable token (`PUB_FAILED`, `NO_SUB`, `OUT_OF_RANGE`, etc.); `<reason>` is human text. |
+| `ERR` | `ERR <code> <reason>\n` | Server error. `<code>` is a stable token (`PUB_FAILED`, `NO_SUB`, `OUT_OF_RANGE`, `NOTLEADER`, etc.); `<reason>` is human text. `ERR WAIT_TIMEOUT <msg-id>` is special: the write **did** land (quorum-durable) — only the `WAIT` replication target was not met in time — so `<reason>` is the assigned id (v3 M4). |
 | `MSG` | `MSG <topic> <partition> <msg-id> <len>\n<payload>\n` | Async push from a subscription. `<partition>` identifies the source partition (echo it back in `ACK`/`NACK`). Order matches `msg-id` within a partition. |
+| `INFO` | `INFO <numlines>\n<key:value>\n…` | Response to `INFO` — a self-delimiting block; read `<numlines>` follow-up lines (v3 M4). |
 
 Source of truth: [`internal/proto/parser.go`](./internal/proto/parser.go),
 [`internal/proto/response.go`](./internal/proto/response.go).
@@ -303,6 +305,25 @@ ToyMQ's durability contract, in three sentences:
 3. **ACKs are debounced to disk every ≤100 ms.** An ack lost in that
    window is recovered by redelivery — the WAL is the source of truth,
    `offsets.json` is a cache.
+
+### Cluster consistency (v3 M4)
+
+In a replicated cluster (`--replicate`, ADR 0028/0030), a `PUB` returns `OK`
+once toyraft **commits** the entry — a quorum (`⌊N/2⌋+1` nodes) durably holds
+it. `PUB … WAIT <n> <timeout-ms>` layers a stronger, opt-in barrier on top,
+where `<n>` counts **followers** (the leader is excluded):
+
+| `WAIT` | Guarantee on an `N`-node cluster |
+|---|---|
+| `WAIT 0` (or absent) | Leader-local ack — quorum-durable, today's default. |
+| `WAIT ⌊N/2⌋` | **Strong** — every member of a commit quorum holds it (`WAIT 1` on 3 nodes). |
+| `WAIT N-1` | Fully replicated — every follower holds it. |
+
+The count is driven by the leader's real `MatchIndex`, so it never over-reports.
+On timeout the server returns `ERR WAIT_TIMEOUT <msg-id>` — the write is
+committed and quorum-durable, only the extra replication factor was not reached
+in time. Inspect live state with `INFO replication` (or `toymqctl info`). See
+[ADR 0033](./docs/adr/0033-replication-ack-and-telemetry-model.md).
 
 Deeper material:
 

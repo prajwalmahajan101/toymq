@@ -70,6 +70,8 @@ Places where the frozen public API is workable but cost toymq extra code or clar
 | FRICTION-02 | 🟠 | [fixed-upstream rc.3] | **`inproc` transport unusable by external embedders.** `inproc.HubConfig.Clock` is typed `internal/clock.Clock` — an external module cannot construct it — and `NewHub` hard-errors on a nil Clock. So the in-process transport (ideal for a single-node embed and for tests) cannot be built outside the toyraft module. `pkg/transport/inproc`. |
 | FRICTION-03 | 🟠 | [fixed-upstream rc.3] | **No transport expresses a `peers=[self]` cluster.** `http.Config.Validate` rejects an empty `PeerURLs` *and* rejects this node's own ID in `PeerURLs`. A single-node cluster (peers == [self], so `PeerURLs` excludes self → empty) satisfies neither. Combined with FRICTION-02, **neither shipped transport can build a single-node cluster**; toymq supplies a local no-op `raft.Transport` (`internal/replication/transport.go`). `pkg/transport/http`. |
 | FRICTION-05 | 🟡 | [confirmed-in-integration] | **No single predicate for "cannot serve as leader."** Redirecting a client around a failing leader (v3 M3, ADR 0032) must treat three distinct errors identically: `*raft.ErrNotLeader` (write hit a follower), `raft.ErrProposalDropped` (leadership lost mid-propose), and `raft.ErrStopped` (node stopping). Each is correct behaviour, but every embedder must rediscover that all three mean "redirect elsewhere"; toymq matches all three in `Broker.NotLeaderHint`. **Request:** a documented predicate (`raft.IsNotLeader(err) bool`) or shared sentinel so consumers don't hand-roll the classification. Behaviour is fine — only the ergonomics. `pkg/raft`. |
+| FRICTION-06 | 🟡 | [confirmed-in-integration] | **`Status().MatchIndex` includes the leader's own entry.** Building `PUB … WAIT <n>` (ADR 0033) — "OK once `n` *followers* hold the index" — the natural count is `len({peer : MatchIndex[peer] >= idx})`. But on a leader `MatchIndex` carries a key for the node *itself* (at `LastLogIndex`), so a naive count is off by one and `WAIT n` is satisfied by `n-1` real followers. **Confirmed:** a 3-node leader's `MatchIndex` has 3 keys `{n1,n2,n3}` including self; `WAIT 2` passed with only one reachable follower until self was excluded (`internal/broker/cluster_wait_test.go`, `TestPublishWaitTimeoutPartitionedFollower` initially green-when-it-should-fail). toymq now captures its own `NodeID` at `AttachRaft` and filters it out. **Request:** document that `MatchIndex` includes self (or exclude it), and expose the node's own `NodeID` on the `Node` interface — there is no accessor today, so an embedder must thread its config id in by hand. `pkg/raft` (`status.go`, `node_public.go`). |
+| FRICTION-07 | 🟢 | [confirmed-in-integration] | **No commit-notify / match-index-advance signal for a `WAIT` barrier.** `WAIT` must block until followers catch up, but `Status()` is a poll-only snapshot — there is no channel or callback that fires when a follower's `MatchIndex` advances. toymq polls `Status()` on a 5ms ticker (`Broker.waitForReplication`), which is fine at toy scale but is busy-work an event would remove. **Request (low priority):** an optional "commit/match advanced" notification so a `WAIT`-style barrier can block without polling. Poll works; this is pure efficiency. `pkg/raft`. |
 | FRICTION-04 | 🟠 | [confirmed-in-integration] | **The driver calls `Transport.Send` synchronously, but the http `Send` blocks → an embedder must write an async wrapper for liveness.** `pkg/raft/driver.go` sends outbound messages inline in its single driver goroutine (`for _, m := range msgs { Transport.Send(ctx, m) }`), and `pkg/transport/http` `client.Send` is a blocking POST with retries + `SendTimeout`. So one dead or slow peer stalls the driver: no ticks, no commits, no election — a cluster-wide liveness failure, not just a lost message. Every embedder using the http transport must therefore decorate it with a per-peer async queue. toymq ships `internal/replication.asyncTransport` (buffered per-peer send + pump goroutine, drop-on-full, matching the best-effort `Send` contract). **Request:** ship an async transport option in-tree, or make the driver fan out Sends off the tick loop, so embedders get liveness by default. `pkg/raft` (`driver.go`) + `pkg/transport/http`. |
 
 ---
@@ -94,6 +96,7 @@ each cost integration time or risked a correctness bug.
 
 | ID | Severity | Status | Gap |
 |---|---|---|---|
+| DOC-02 | 🟡 | [confirmed-in-integration] | **`Status().MatchIndex` self-inclusion and `LastLogIndex` semantics are undocumented for a lag/ack use.** The `status.go` field comments name the fields but not that `MatchIndex` includes the leader itself (FRICTION-06) nor that `LastLogIndex >= CommitIndex >= ApplyIndex` is the invariant an INFO/lag view relies on. Both were learned by printing the map in a test. A one-line note per field ("includes self", "monotonic, >= CommitIndex") would have saved the round trip. `pkg/raft` (`status.go`). |
 | DOC-01 | 🟡 | [fixed-upstream rc.3] | **No guidance on transport choice for an external embedder.** The constraints that rule out both shipped transports for a single node (FRICTION-02/03) are only discoverable by hitting the `NewHub`/`Validate` errors at runtime. A short "embedding toyraft: transports" note — or an exported single-node/no-op transport — would have saved the round trip. `pkg/transport`. |
 
 ---
@@ -245,7 +248,41 @@ by matching all three in `Broker.NotLeaderHint` and surfacing `NOTLEADER` for ea
   requested — this is a reasonable contract for a stopped node.
 
 ### v3 M4 — WAIT + INFO replication
-_Not started._
+
+**Integrated:** `PUB … WAIT <n> <timeout-ms>` (a durability barrier on top of the
+committed write) and `INFO replication` (role, leader, commit/apply/log offsets,
+per-follower entry-lag), plus scrape-time raft gauges and a `WaitTotal` counter.
+All three read `raft.Node.Status()` — `MatchIndex` for the ack count / peer lag,
+`CommitIndex`/`ApplyIndex`/`LastLogIndex` for the offsets, `Role`/`LeaderHint`
+for topology. `Status()` proved sufficient for the whole milestone; no new toyraft
+surface was needed. The owned-risk test partitions one follower and asserts
+`WAIT 2` times out (never over-counts) while `WAIT 1` succeeds
+(`internal/broker/cluster_wait_test.go`).
+
+**What surfaced:**
+
+- **`MatchIndex` includes self (FRICTION-06).** The one real gotcha. The
+  ack/lag count is naturally "peers whose `MatchIndex >= idx`", but the leader's
+  own id is a key in the map, so the count was off by one and `WAIT n` was
+  satisfied by `n-1` real followers. Caught by the partition test going green
+  when it should have failed. Fixed by capturing the node's own `NodeID` at
+  `AttachRaft` and excluding it. Compounded by there being **no `NodeID()`
+  accessor on the `Node` interface** — the id had to be threaded in from config.
+- **No commit/match-advance signal (FRICTION-07).** `WAIT` polls `Status()` on a
+  5ms ticker because there is no event to block on. Fine at this scale; noted as
+  a low-priority efficiency request.
+- **Byte-level lag not derivable (dropped from scope).** The roadmap asked for
+  per-replica lag in *bytes + entries*. toyraft exposes log **indices**, not a
+  log-index→byte-offset map, so byte-lag would require toymq to maintain its own
+  index↔WAL-offset table. Entries-lag (`LastLogIndex − MatchIndex[peer]`) is
+  exact and free; byte-lag is deferred (ADR 0033 §Consequences). Not a toyraft
+  bug — a deliberate scope cut recorded so the roadmap line is reconciled.
+
+**What worked:** `Status()` being a cheap, copy-returning snapshot made both the
+INFO handler and a scrape-time Prometheus collector trivial — the collector reads
+`Status()` on every scrape, so the gauges are always fresh with no sampler
+goroutine. `Propose` returning the entry `Index` (rc.3, FRICTION-01) is what makes
+`WAIT` possible at all: the barrier waits on exactly the index just proposed.
 
 ### v3 M5 — cluster TUI
 _Not started._
