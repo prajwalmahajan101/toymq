@@ -64,6 +64,16 @@ func TestReadCommandHappy(t *testing.T) {
 			want:  SubCommand{Topic: "orders", Partition: 2, AllPartitions: false, ConsumerID: "consumer-1"},
 		},
 		{
+			name:  "SUB STALE all partitions",
+			input: "SUB orders consumer-1 STALE\n",
+			want:  SubCommand{Topic: "orders", AllPartitions: true, ConsumerID: "consumer-1", Stale: true},
+		},
+		{
+			name:  "SUB STALE single partition",
+			input: "SUB orders#2 consumer-1 STALE\n",
+			want:  SubCommand{Topic: "orders", Partition: 2, AllPartitions: false, ConsumerID: "consumer-1", Stale: true},
+		},
+		{
 			name:  "ACK",
 			input: "ACK consumer-1 0 42\n",
 			want:  AckCommand{ConsumerID: "consumer-1", Partition: 0, MsgID: 42},

@@ -33,6 +33,11 @@ type SubCommand struct {
 	Partition     int
 	AllPartitions bool
 	ConsumerID    string
+	// Stale requests a follower-local read (SUB … STALE). Absent → false,
+	// so in a replicated cluster a default SUB is redirected to the leader
+	// while STALE opts into the documented non-linearizable local read
+	// (v3 M3, ADR 0032). Ignored in standalone mode.
+	Stale bool
 }
 
 // AckCommand is a parsed ACK frame. Partition identifies which
