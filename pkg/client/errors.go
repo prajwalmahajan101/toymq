@@ -50,6 +50,19 @@ func (e *NotLeaderError) Error() string {
 	return fmt.Sprintf("client: not leader, redirect to %q", e.Hint)
 }
 
+// WaitTimeoutError is a typed ERR WAIT_TIMEOUT <msgid> from a PUB … WAIT
+// barrier that was not met in time (v3 M4, ADR 0033). The write is committed
+// and quorum-durable — MsgID is the assigned id — only the requested
+// replication factor was not reached before the timeout. Callers can
+// errors.As to recover the id and treat the write as landed.
+type WaitTimeoutError struct {
+	MsgID uint64
+}
+
+func (e *WaitTimeoutError) Error() string {
+	return fmt.Sprintf("client: replication wait timed out (msgid %d, write is committed)", e.MsgID)
+}
+
 // serverErr converts a frameErr into the appropriate typed/sentinel error,
 // shared by every request path (PUB/SUB/ACK/NACK/CREATE/flow) so NOTLEADER
 // and TRANSPORT are classified identically everywhere.

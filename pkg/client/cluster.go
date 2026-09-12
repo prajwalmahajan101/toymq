@@ -176,6 +176,27 @@ func (cc *ClusterClient) PubDelay(ctx context.Context, topic, dedupeKey, routing
 	return msgID, dup, loopErr
 }
 
+// PubWait is Pub with a replication barrier, following redirects to the
+// leader. Mirrors Client.PubWait (v3 M4, ADR 0033). A *WaitTimeoutError is
+// terminal (not a redirect), so it surfaces to the caller.
+func (cc *ClusterClient) PubWait(ctx context.Context, topic, dedupeKey, routingKey string, payload []byte, waitReplicas int, waitTimeoutMs uint64) (msgID uint64, dup bool, err error) {
+	loopErr := cc.redirectLoop(ctx, func(c *Client) error {
+		msgID, dup, err = c.PubWait(ctx, topic, dedupeKey, routingKey, payload, waitReplicas, waitTimeoutMs)
+		return err
+	})
+	return msgID, dup, loopErr
+}
+
+// Info queries the currently-connected member's replication state without
+// redirecting — INFO is a local read served on any node (v3 M4, ADR 0033).
+func (cc *ClusterClient) Info(ctx context.Context) (ReplicationInfo, error) {
+	c, err := cc.conn(ctx)
+	if err != nil {
+		return ReplicationInfo{}, err
+	}
+	return c.Info(ctx)
+}
+
 // Create creates a topic on the leader, following redirects. Mirrors Client.Create.
 func (cc *ClusterClient) Create(ctx context.Context, topic string, partitions int) error {
 	return cc.redirectLoop(ctx, func(c *Client) error {

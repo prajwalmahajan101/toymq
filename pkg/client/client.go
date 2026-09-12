@@ -189,7 +189,7 @@ func (c *Client) readLoop() {
 // subscription is active.
 func (c *Client) dispatch(f frame) {
 	switch f.kind {
-	case frameOK, frameDup, frameErr:
+	case frameOK, frameDup, frameErr, frameInfo:
 		c.pending.deliver(f)
 	case frameMsg:
 		c.subMu.Lock()

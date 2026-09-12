@@ -36,6 +36,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runSub(ctx, rest, stdout, stderr)
 	case "ack":
 		return runAck(ctx, rest, stdout, stderr)
+	case "info":
+		return runInfo(ctx, rest, stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return exitOK
@@ -54,6 +56,7 @@ Commands:
   pub <topic> <payload>           publish a message
   sub <topic> <consumer-id>       subscribe and stream messages (topic#n or topic#* to scope)
   ack <topic> <consumer-id> <id>  acknowledge one message id
+  info                            print the broker's replication state
 
 Run "toymqctl <command> -h" for command-specific flags.
 `)

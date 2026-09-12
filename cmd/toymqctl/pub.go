@@ -20,6 +20,8 @@ func runPub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	routingKey := fs.String("routing-key", "", "partition routing key (hashed to a partition; optional)")
 	partition := fs.Int("partition", -1, "explicit target partition (>=0 pins it, overriding -routing-key)")
 	delayMs := fs.Uint64("delay-ms", 0, "hold the message from delivery for this many milliseconds (0 = immediate)")
+	wait := fs.Int("wait", 0, "wait for this many followers to replicate before OK (0 = leader-only); overrides -delay-ms")
+	waitTimeoutMs := fs.Uint64("wait-timeout-ms", 1000, "timeout for -wait in milliseconds")
 	conn := registerConnFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: toymqctl pub [flags] <topic> <payload>")
@@ -47,7 +49,15 @@ func runPub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	defer c.Close()
 
-	id, dup, err := c.PubDelay(ctx, topic, *key, *routingKey, []byte(payload), *delayMs)
+	var (
+		id  uint64
+		dup bool
+	)
+	if *wait > 0 {
+		id, dup, err = c.PubWait(ctx, topic, *key, *routingKey, []byte(payload), *wait, *waitTimeoutMs)
+	} else {
+		id, dup, err = c.PubDelay(ctx, topic, *key, *routingKey, []byte(payload), *delayMs)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "toymqctl pub: %v\n", err)
 		return exitErr
