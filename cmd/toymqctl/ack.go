@@ -41,14 +41,8 @@ func runAck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	opts, err := conn.dialOptions()
-	if err != nil {
-		fmt.Fprintf(stderr, "toymqctl ack: %v\n", err)
-		return exitUsage
-	}
-
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-	c, err := client.Dial(dialCtx, *addr, opts...)
+	c, err := conn.dial(dialCtx, *addr)
 	cancel()
 	if err != nil {
 		fmt.Fprintf(stderr, "toymqctl ack: dial: %v\n", err)

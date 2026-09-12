@@ -9,7 +9,7 @@ import (
 
 // pubCmd dispatches a PUB on a background goroutine and returns a
 // pubResultMsg when the broker responds.
-func pubCmd(ctx context.Context, c *client.Client, topic, dedupe, payload string) tea.Cmd {
+func pubCmd(ctx context.Context, c brokerConn, topic, dedupe, payload string) tea.Cmd {
 	return func() tea.Msg {
 		callCtx, cancel := context.WithTimeout(ctx, opTimeout)
 		defer cancel()
@@ -21,7 +21,7 @@ func pubCmd(ctx context.Context, c *client.Client, topic, dedupe, payload string
 // subCmd opens a subscription. On success the returned channel is
 // handed back via subStartedMsg; the caller is responsible for
 // chaining a readDeliveryCmd to pump it.
-func subCmd(ctx context.Context, c *client.Client, topic, consumerID string) tea.Cmd {
+func subCmd(ctx context.Context, c brokerConn, topic, consumerID string) tea.Cmd {
 	return func() tea.Msg {
 		ch, err := c.Sub(ctx, topic, consumerID)
 		return subStartedMsg{topic: topic, consumerID: consumerID, ch: ch, err: err}

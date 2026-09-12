@@ -28,9 +28,19 @@ const (
 // model is the root tea.Model. Held by value; Update returns a new
 // model with the mutated fields. Pointers (client, ctx) are shared by
 // design — the TUI owns exactly one client for its lifetime.
+// brokerConn is the client surface the TUI uses, satisfied by both the
+// single-connection client.Client and the redirect-following
+// client.ClusterClient (v3 M3, ADR 0032).
+type brokerConn interface {
+	Pub(ctx context.Context, topic, dedupeKey, routingKey string, payload []byte) (uint64, bool, error)
+	Sub(ctx context.Context, topic, consumerID string) (<-chan client.Delivery, error)
+	Err() error
+	Close() error
+}
+
 type model struct {
 	ctx    context.Context
-	client *client.Client
+	client brokerConn
 	addr   string
 
 	state state
@@ -74,7 +84,7 @@ type model struct {
 
 // newModel builds a fresh model bound to an already-dialed client.
 // ctx is the program-level context (cancelled on SIGINT/SIGTERM).
-func newModel(ctx context.Context, c *client.Client, addr string) model {
+func newModel(ctx context.Context, c brokerConn, addr string) model {
 	mk := func(placeholder string, width int) textinput.Model {
 		ti := textinput.New()
 		ti.Placeholder = placeholder

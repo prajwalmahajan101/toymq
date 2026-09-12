@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,8 +36,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	useTLS := fs.Bool("tls", false, "dial over TLS")
 	tlsCA := fs.String("tls-ca", "", "PEM CA file trusted for -tls (empty = system roots)")
 	tlsInsecure := fs.Bool("tls-insecure", false, "skip TLS verification (dev/self-signed only)")
+	cluster := fs.String("cluster", "", "comma-separated cluster members (id@host:port,...) for redirect-following; overrides -addr")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: toymq-tui [--addr host:port] [--tls] [--auth-token t]")
+		fmt.Fprintln(stderr, "usage: toymq-tui [--addr host:port | --cluster id@host:port,...] [--tls] [--auth-token t]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -59,14 +61,24 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-	c, err := client.Dial(dialCtx, *addr, opts...)
+	var c brokerConn
+	var err error
+	if *cluster != "" {
+		c, err = client.DialCluster(dialCtx, strings.Split(*cluster, ","), opts...)
+	} else {
+		c, err = client.Dial(dialCtx, *addr, opts...)
+	}
 	cancel()
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
 	defer c.Close()
 
-	m := newModel(ctx, c, *addr)
+	label := *addr
+	if *cluster != "" {
+		label = *cluster
+	}
+	m := newModel(ctx, c, label)
 	p := tea.NewProgram(m,
 		tea.WithOutput(stdout),
 		tea.WithContext(ctx),
