@@ -69,6 +69,7 @@ Places where the frozen public API is workable but cost toymq extra code or clar
 | FRICTION-01 | 🟠 | [fixed-upstream rc.3] | **`Propose` discards the `Apply` result.** `raft.Node.Propose` returns `(Index, Term, error)` and drops `Apply`'s `any` return, so a PUB's WAL-assigned MsgID cannot come back through `Propose`. toymq had to build a nonce-result registry (`internal/replication/registry.go`): the leader stamps a nonce, registers a channel, and `Apply` resolves it. The rc.2 reference `kvsm` hits the same wall — it exposes a separate `Get` for exactly this reason. **Request:** return the apply result from `Propose`, or expose a typed result channel. `pkg/raft`. |
 | FRICTION-02 | 🟠 | [fixed-upstream rc.3] | **`inproc` transport unusable by external embedders.** `inproc.HubConfig.Clock` is typed `internal/clock.Clock` — an external module cannot construct it — and `NewHub` hard-errors on a nil Clock. So the in-process transport (ideal for a single-node embed and for tests) cannot be built outside the toyraft module. `pkg/transport/inproc`. |
 | FRICTION-03 | 🟠 | [fixed-upstream rc.3] | **No transport expresses a `peers=[self]` cluster.** `http.Config.Validate` rejects an empty `PeerURLs` *and* rejects this node's own ID in `PeerURLs`. A single-node cluster (peers == [self], so `PeerURLs` excludes self → empty) satisfies neither. Combined with FRICTION-02, **neither shipped transport can build a single-node cluster**; toymq supplies a local no-op `raft.Transport` (`internal/replication/transport.go`). `pkg/transport/http`. |
+| FRICTION-05 | 🟡 | [confirmed-in-integration] | **No single predicate for "cannot serve as leader."** Redirecting a client around a failing leader (v3 M3, ADR 0032) must treat three distinct errors identically: `*raft.ErrNotLeader` (write hit a follower), `raft.ErrProposalDropped` (leadership lost mid-propose), and `raft.ErrStopped` (node stopping). Each is correct behaviour, but every embedder must rediscover that all three mean "redirect elsewhere"; toymq matches all three in `Broker.NotLeaderHint`. **Request:** a documented predicate (`raft.IsNotLeader(err) bool`) or shared sentinel so consumers don't hand-roll the classification. Behaviour is fine — only the ergonomics. `pkg/raft`. |
 | FRICTION-04 | 🟠 | [confirmed-in-integration] | **The driver calls `Transport.Send` synchronously, but the http `Send` blocks → an embedder must write an async wrapper for liveness.** `pkg/raft/driver.go` sends outbound messages inline in its single driver goroutine (`for _, m := range msgs { Transport.Send(ctx, m) }`), and `pkg/transport/http` `client.Send` is a blocking POST with retries + `SendTimeout`. So one dead or slow peer stalls the driver: no ticks, no commits, no election — a cluster-wide liveness failure, not just a lost message. Every embedder using the http transport must therefore decorate it with a per-peer async queue. toymq ships `internal/replication.asyncTransport` (buffered per-peer send + pump goroutine, drop-on-full, matching the best-effort `Send` contract). **Request:** ship an async transport option in-tree, or make the driver fan out Sends off the tick loop, so embedders get liveness by default. `pkg/raft` (`driver.go`) + `pkg/transport/http`. |
 
 ---
@@ -217,7 +218,31 @@ would let a client distinguish lost from delayed — a possible future API note,
 a bug.
 
 ### v3 M3 — client routing
-_Not started._
+
+Client routing is entirely client-side (ADR 0032): resolving the `ERR NOTLEADER`
+hint to a member address and retrying lives in `pkg/client.ClusterClient`, not in
+toyraft. As expected, this surfaced **no toyraft friction** — the redirect
+contract shipped in M2 (`*raft.ErrNotLeader` carrying a `LeaderHint`) was
+sufficient.
+
+**One ergonomic observation (not a bug).** Routing around a *shutting-down* leader
+needs more than `*raft.ErrNotLeader`. When a node is stopping, `Propose` returns
+`raft.ErrStopped`; when leadership is lost mid-propose it returns
+`raft.ErrProposalDropped`. Both are the correct raft behaviour, but from the
+embedding server's view they are the same actionable condition as `ErrNotLeader`:
+"this node cannot commit your write as leader — go elsewhere." toymq handles this
+by matching all three in `Broker.NotLeaderHint` and surfacing `NOTLEADER` for each.
+
+- **Feedback to toyraft:** these three are distinct error *types* but a single
+  *class* for a client-facing consumer. A documented predicate (e.g.
+  `raft.IsNotLeader(err) bool`) or a shared sentinel would save every embedder
+  from rediscovering that `ErrStopped`/`ErrProposalDropped` must be treated like
+  `ErrNotLeader` for redirect purposes. Filed as an API-friction item, not a bug —
+  behaviour is correct, only the classification is left to the consumer.
+- **`LeaderHint` on a stopped node** returns a stale/empty value, as one would
+  expect. toymq tolerates this: an empty or self-referential hint makes the client
+  sweep its member set round-robin, so redirect still converges. No change
+  requested — this is a reasonable contract for a stopped node.
 
 ### v3 M4 — WAIT + INFO replication
 _Not started._

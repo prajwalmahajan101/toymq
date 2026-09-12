@@ -462,7 +462,7 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
   `feat/cluster`.
 
 ## v3 M3 — Client routing: write redirect + read model
-**Branch:** `feat/cluster-routing` · **Depends on:** v3 M2 · **ADR:** 0020 — write redirection & cluster read consistency
+**Branch:** `feat/cluster-routing` · **Depends on:** v3 M2 · **ADR:** [0032](./adr/0032-client-routing-read-model.md) — client routing: write redirect + leader-default read model
 - Follower write → leader-hint redirect error (`MOVED <leader-addr>` /
   `ERR NOTLEADER <host:port>`). `pkg/client` (CLI **and** TUI) auto-retry against
   the hint with bounded backoff.
@@ -475,6 +475,13 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
   retry.
 - **Exit:** any-node client completes all writes; leader/replica read model behaves
   as specified; CLI/TUI follow redirects transparently.
+- **Status:** ✅ shipped — `ClusterClient` redirecting wrapper (`pkg/client/cluster.go`)
+  with bounded-jitter backoff; typed `*NotLeaderError`; `SUB … STALE` leader-default
+  read model (`IsLeader()` gate); `NotLeaderHint` extended to `ErrProposalDropped`/
+  `ErrStopped`; `-cluster`/`--stale` on `toymqctl` + `toymq-tui`. Integration
+  (`internal/server/cluster_routing_test.go`, `-race`): follower-seeded client
+  completes writes/reads via redirect, follower `SubStale` serves local state, and
+  writes converge after a mid-run leader kill.
 
 ## v3 M4 — `WAIT` + INFO replication + cluster observability
 **Branch:** `feat/wait-info-repl` · **Depends on:** v3 M2 (reads `Status().MatchIndex`) · **ADR:** 0021 — replication acknowledgement & telemetry model
@@ -537,7 +544,7 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
 |---|---|---|---|---|
 | v3 M1 | Raft embedding + single-node replicated path | 📋 Planned (buildable now) | — | — |
 | v3 M2 | Multi-node replication + leader election | 🚧 M2a+M2b done (`feat/cluster`, ADR 0030/0031) | — | — |
-| v3 M3 | Client routing: write redirect + read model | 📋 Planned (buildable now) | — | — |
+| v3 M3 | Client routing: write redirect + read model | ✅ Done (`feat/cluster-routing`, ADR 0032) | — | — |
 | v3 M4 | `WAIT` + INFO replication + cluster observability | 📋 Planned (buildable now) | — | — |
 | v3 M5 | TUI v3: cluster view | 📋 Planned | — | — |
 | v3 M6 | Bench + dogfood report + polish + v3.0.0 | 📋 Planned | — | `v3.0.0` |
