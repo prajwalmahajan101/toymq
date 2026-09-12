@@ -122,20 +122,40 @@ func (b *Broker) LeaderHint() string {
 	return string(b.raft.LeaderHint())
 }
 
-// NotLeaderHint reports whether err is a raft not-leader rejection (a write that
-// reached a follower) and, if so, the leader id to redirect to: the rejection's
-// own LeaderHint, or the broker's current best guess when the rejection carries
-// none. It lets the server surface NOTLEADER without importing toyraft (v3 M2).
+// IsLeader reports whether this node may serve leader-gated operations. A
+// standalone broker (raft == nil) is always its own leader, so standalone
+// behaviour is unchanged. In a replicated cluster only the raft leader
+// returns true; the server uses it to redirect a default SUB off a follower
+// (v3 M3, ADR 0032).
+func (b *Broker) IsLeader() bool {
+	return b.raft == nil || b.raft.Status().Role == raft.Leader
+}
+
+// NotLeaderHint reports whether err is a raft rejection the client should
+// redirect around and, if so, the leader id to redirect to. It matches three
+// cases (v3 M2 + M3, ADR 0032):
+//   - *raft.ErrNotLeader — a write reached a follower; use its own LeaderHint.
+//   - raft.ErrProposalDropped — leadership was lost mid-propose.
+//   - raft.ErrStopped — the raft node is stopped/stopping (a dying leader).
+//
+// The latter two carry no hint, so the broker's current best guess is used;
+// when that too is empty the client sweeps its member set. This lets the server
+// surface NOTLEADER for any "cannot serve this write as leader" condition
+// instead of a command-specific *_FAILED, so an any-node client routes around a
+// failing leader.
 func (b *Broker) NotLeaderHint(err error) (string, bool) {
 	var nl *raft.ErrNotLeader
-	if !errors.As(err, &nl) {
-		return "", false
+	if errors.As(err, &nl) {
+		hint := string(nl.LeaderHint)
+		if hint == "" {
+			hint = b.LeaderHint()
+		}
+		return hint, true
 	}
-	hint := string(nl.LeaderHint)
-	if hint == "" {
-		hint = b.LeaderHint()
+	if errors.Is(err, raft.ErrProposalDropped) || errors.Is(err, raft.ErrStopped) {
+		return b.LeaderHint(), true
 	}
-	return hint, true
+	return "", false
 }
 
 // proposePublish is the replicated publish path. It resolves the clock-derived

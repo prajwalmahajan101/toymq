@@ -400,6 +400,19 @@ func (s *Session) handleSub(ctx context.Context, c proto.SubCommand) {
 		s.currentCancel = nil
 	}
 
+	// Leader-default read model (v3 M3, ADR 0032): in a replicated cluster a
+	// default SUB on a follower is redirected to the leader, mirroring the
+	// write path, so an any-node client reads consistently. SUB … STALE opts
+	// into the documented non-linearizable follower-local read. Standalone
+	// IsLeader() is always true, so this is a no-op there.
+	if !c.Stale && !s.broker.IsLeader() {
+		hint := s.broker.LeaderHint()
+		s.sendResp(func(bw *bufio.Writer) error {
+			return proto.WriteErr(bw, proto.ErrCodeNotLeader, hint)
+		})
+		return
+	}
+
 	// Ensure the topic and validate the partition selector BEFORE queuing
 	// the SUB acknowledgement, so the OK is on respCh ahead of any MSG the
 	// delivery goroutines push onto sendCh. Combined with the writer's

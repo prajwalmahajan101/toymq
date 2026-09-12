@@ -215,7 +215,15 @@ func parsePub(br *bufio.Reader, fields []string, maxPayload int) (Command, error
 }
 
 func parseSub(fields []string) (Command, error) {
-	if len(fields) != 3 {
+	// SUB <topic> <consumer> [STALE]: the optional 4th token opts into a
+	// follower-local read (ADR 0032). Any other 4th token is rejected.
+	stale := false
+	if len(fields) == 4 {
+		if fields[3] != "STALE" {
+			return nil, fmt.Errorf("%w: SUB unexpected 4th arg %q (want STALE)", ErrInvalidCommand, fields[3])
+		}
+		stale = true
+	} else if len(fields) != 3 {
 		return nil, fmt.Errorf("%w: SUB expect 2 args, got %d", ErrInvalidCommand, len(fields)-1)
 	}
 	topic, partition, star, explicit, err := parseTopicPartition(fields[1])
@@ -224,7 +232,7 @@ func parseSub(fields []string) (Command, error) {
 	}
 	// SUB <topic> (no suffix) and SUB <topic>#* both mean all partitions.
 	all := star || !explicit
-	return SubCommand{Topic: topic, Partition: partition, AllPartitions: all, ConsumerID: fields[2]}, nil
+	return SubCommand{Topic: topic, Partition: partition, AllPartitions: all, ConsumerID: fields[2], Stale: stale}, nil
 }
 
 func parseAck(fields []string) (Command, error) {
