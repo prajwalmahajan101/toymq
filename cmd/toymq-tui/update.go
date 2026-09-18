@@ -66,6 +66,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case clusterInfoMsg:
+		if msg.gen != m.pollGen {
+			return m, nil // stale poll from a prior view entry
+		}
+		m.clusterInfo = msg.info
+		m.clusterErr = msg.err
+		return m, nil
+
+	case clusterPollTickMsg:
+		if msg.gen != m.pollGen || m.state != stateClusterView {
+			return m, nil // view left or superseded — stop the chain
+		}
+		return m, tea.Batch(
+			clusterInfoCmd(m.ctx, m.client, m.pollGen),
+			clusterPollTick(m.pollGen),
+		)
+
 	case transportLostMsg:
 		m.state = stateDisconnected
 		m.transportErr = msg.err
@@ -97,6 +114,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handlePubKey(msg)
 	case stateSubModal:
 		return m.handleSubKey(msg)
+	case stateClusterView:
+		return m.handleClusterKey(msg)
 	case stateDisconnected:
 		if msg.String() == "q" || msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
@@ -132,6 +151,28 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		d := *m.lastDelivery
 		m.log(fmt.Sprintf("NACK id=%d ...", d.MsgID))
 		return m, nackCmd(m.ctx, d)
+	case "c":
+		m.state = stateClusterView
+		m.status = ""
+		m.pollGen++ // start a fresh poll chain; strands any prior ticker
+		return m, tea.Batch(
+			clusterInfoCmd(m.ctx, m.client, m.pollGen),
+			clusterPollTick(m.pollGen),
+		)
+	}
+	return m, nil
+}
+
+// handleClusterKey runs in stateClusterView. esc/c return to main; the
+// bumped pollGen left behind lets the in-flight ticker self-expire.
+func (m model) handleClusterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "c":
+		m.state = stateMain
+		m.pollGen++
+		return m, nil
+	case "q", "ctrl+c":
+		return m, tea.Quit
 	}
 	return m, nil
 }

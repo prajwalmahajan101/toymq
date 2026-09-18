@@ -37,3 +37,18 @@ type ackResultMsg struct {
 type transportLostMsg struct {
 	err error
 }
+
+// clusterInfoMsg carries one INFO replication poll result (v3 M5). gen
+// tags the poll chain that issued it; a mismatch means the view was
+// left and re-entered, so the result is stale and dropped.
+type clusterInfoMsg struct {
+	info client.ReplicationInfo
+	err  error
+	gen  int
+}
+
+// clusterPollTickMsg fires clusterPollInterval after the previous poll
+// while the cluster view is open. gen gates re-arming.
+type clusterPollTickMsg struct {
+	gen int
+}
