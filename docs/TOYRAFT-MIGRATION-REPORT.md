@@ -285,7 +285,33 @@ goroutine. `Propose` returning the entry `Index` (rc.3, FRICTION-01) is what mak
 `WAIT` possible at all: the barrier waits on exactly the index just proposed.
 
 ### v3 M5 — cluster TUI
-_Not started._
+
+**`Status()` polling ergonomics for a live view: adequate, with one caveat.**
+
+The cluster pane polls `INFO replication` (which reads `broker.ReplicationStatus()`
+→ `raft.Node.Status()`) on a 1s ticker while open. At toy scale this is cheap and
+plenty live: `Status()` is a cheap in-memory read, INFO is a local read served on
+any node with no leader redirect, and the poll only runs while the pane is on
+screen. No dedicated sampler goroutine is needed — the same pull-based shape that
+made the `RaftCollector` (M4) clean.
+
+- **FRICTION-07 confirmed from the display side.** There is no commit-notify /
+  match-index-advance signal to subscribe to, so a *live* view has no choice but
+  to poll. A 1s cadence is fine for a human-watched pane; a sub-second "follow the
+  leader instantly" view would poll hot with nothing to push it. An
+  edge-triggered `Status()` change channel upstream would let the TUI redraw only
+  on real transitions instead of every tick. Low priority at toy scale — logged,
+  not blocking.
+- **Peer rows are leader-only by design and the view must own that.**
+  `Status().MatchIndex` is nil on a follower, so a follower's INFO carries
+  role/leader/offsets but no peer table. The pane surfaces this honestly
+  ("peer detail is leader-only; leader=<id>") rather than implying an empty
+  cluster. A per-node role/topology view would require fanning INFO out to every
+  member — deferred (v4/follow-up), not a `Status()` shortcoming.
+- **Leadership change is observable purely through re-polling the same
+  connection.** When the polled node loses leadership, the next `Status()` flips
+  `Role` to `follower` and points `LeaderID` at the new leader — no reconnect, no
+  redirect. `Status()` is sufficient to follow elections from a single held conn.
 
 ### v3 M6 — finalize & deliver
 _Not started._ Dedupe findings, open the toyraft issues, deliver as the `v1.0.0`

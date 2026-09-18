@@ -503,10 +503,15 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
 **Branch:** `feat/tui-v3` · **Depends on:** v3 M3, v3 M4 · **ADR:** *(none expected — consumes M3/M4; revisit only if a real contract emerges)*
 - Cluster pane: replicas, current leader, per-node role, lag, log offset (fed by
   `INFO replication`); AUTH + redirect-aware connect.
-- **Owned risk test:** `teatest` cluster-view smoke against a running 3-node
-  cluster; a leader change is reflected in the view.
-- **Exit:** the TUI renders live cluster topology and follows leadership changes;
-  all v2 keybindings still pass.
+- **Owned risk test:** `TestUpdate_ClusterLeaderChangeReflected` — a
+  leader→follower+new-leader `INFO` transition through `Update` is reflected in
+  the rendered `View()`. Pure-model over `teatest`: the owned-test *intent*
+  (leader change shows in the view) is met with no new dep, and client-level
+  leader-kill convergence is already covered by
+  `internal/server/cluster_routing_test.go` (`TestClusterClientConvergesAfterLeaderKill`).
+- **Exit:** the TUI renders live cluster topology (`c` → cluster pane, 1s
+  `INFO replication` poll) and follows leadership changes; all v2 keybindings
+  still pass. **✅ met** — `feat/tui-v3`.
 
 ## v3 M6 — Bench + dogfood report + polish + `v3.0.0`
 **Branch:** `feat/release-v3` · **Depends on:** v3 M1–M5 all merged
@@ -546,7 +551,7 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
 | v3 M2 | Multi-node replication + leader election | 🚧 M2a+M2b done (`feat/cluster`, ADR 0030/0031) | — | — |
 | v3 M3 | Client routing: write redirect + read model | ✅ Done (`feat/cluster-routing`, ADR 0032) | — | — |
 | v3 M4 | `WAIT` + INFO replication + cluster observability | ✅ Done (`feat/wait-info-repl`, ADR 0033) | — | — |
-| v3 M5 | TUI v3: cluster view | 📋 Planned | — | — |
+| v3 M5 | TUI v3: cluster view | ✅ Done (`feat/tui-v3`) | — | — |
 | v3 M6 | Bench + dogfood report + polish + v3.0.0 | 📋 Planned | — | `v3.0.0` |
 
 Every committed milestone is **buildable on toyraft `rc.3` as it stands today** —
