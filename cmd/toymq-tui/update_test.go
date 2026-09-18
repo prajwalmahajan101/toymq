@@ -222,6 +222,111 @@ func TestUpdate_TransportLostClearsLastDelivery(t *testing.T) {
 	}
 }
 
+func TestUpdate_CKeyOpensClusterView(t *testing.T) {
+	m := freshModel(t)
+	next, cmd := m.Update(key("c"))
+	got := next.(model)
+	if got.state != stateClusterView {
+		t.Fatalf("state = %v, want stateClusterView", got.state)
+	}
+	if got.pollGen != 1 {
+		t.Fatalf("pollGen = %d, want 1 (fresh poll chain)", got.pollGen)
+	}
+	if cmd == nil {
+		t.Fatalf("expected an initial poll+tick cmd, got nil")
+	}
+}
+
+func TestUpdate_ClusterEscReturnsMain(t *testing.T) {
+	m := freshModel(t)
+	m.state = stateClusterView
+	m.pollGen = 1
+	next, _ := m.Update(key("c")) // toggle key also exits
+	got := next.(model)
+	if got.state != stateMain {
+		t.Fatalf("state = %v, want stateMain after esc/c", got.state)
+	}
+	if got.pollGen != 2 {
+		t.Fatalf("pollGen = %d, want 2 (bumped so the ticker self-expires)", got.pollGen)
+	}
+}
+
+func TestUpdate_ClusterInfoStoredAndStaleDropped(t *testing.T) {
+	m := freshModel(t)
+	m.pollGen = 3
+	info := client.ReplicationInfo{Role: "leader", Raw: map[string]string{"role": "leader"}}
+	next, _ := m.Update(clusterInfoMsg{info: info, gen: 3})
+	got := next.(model)
+	if got.clusterInfo.Role != "leader" {
+		t.Fatalf("clusterInfo.Role = %q, want leader", got.clusterInfo.Role)
+	}
+
+	stale := client.ReplicationInfo{Role: "follower", Raw: map[string]string{"role": "follower"}}
+	next2, _ := got.Update(clusterInfoMsg{info: stale, gen: 2})
+	got2 := next2.(model)
+	if got2.clusterInfo.Role != "leader" {
+		t.Fatalf("stale gen applied: clusterInfo.Role = %q, want leader (unchanged)", got2.clusterInfo.Role)
+	}
+}
+
+func TestUpdate_ClusterPollTickReArmsOnlyWhenOpen(t *testing.T) {
+	m := freshModel(t)
+	m.state = stateClusterView
+	m.pollGen = 1
+	if _, cmd := m.Update(clusterPollTickMsg{gen: 1}); cmd == nil {
+		t.Fatalf("open view + matching gen: expected re-arm cmd, got nil")
+	}
+	// Left the view: a lingering tick must not re-arm.
+	m.state = stateMain
+	if _, cmd := m.Update(clusterPollTickMsg{gen: 1}); cmd != nil {
+		t.Fatalf("view left: expected nil cmd (chain stops), got a cmd")
+	}
+	// Stale gen must not re-arm even while open.
+	m.state = stateClusterView
+	if _, cmd := m.Update(clusterPollTickMsg{gen: 0}); cmd != nil {
+		t.Fatalf("stale gen: expected nil cmd, got a cmd")
+	}
+}
+
+// TestUpdate_ClusterLeaderChangeReflected is the M5 owned-risk test: a
+// leader change on the polled node must show in the rendered view.
+func TestUpdate_ClusterLeaderChangeReflected(t *testing.T) {
+	m := freshModel(t)
+	m.width, m.height = 100, 30
+	m.pollGen = 1
+	m.state = stateClusterView
+
+	asLeader := client.ReplicationInfo{Role: "leader", Raw: map[string]string{
+		"role": "leader", "leader": "n1", "term": "5",
+		"commit_index": "42", "apply_index": "42", "last_log_index": "42",
+		"connected_replicas": "2",
+		"replica_n2_match_index": "42", "replica_n2_lag_entries": "0",
+		"replica_n3_match_index": "40", "replica_n3_lag_entries": "2",
+	}}
+	next, _ := m.Update(clusterInfoMsg{info: asLeader, gen: 1})
+	m = next.(model)
+	v := m.View()
+	if !strings.Contains(v, "n1") || !strings.Contains(v, "n3") {
+		t.Fatalf("leader view missing peers/leader:\n%s", v)
+	}
+
+	// n1 loses leadership; a re-poll now returns follower + new leader n2.
+	asFollower := client.ReplicationInfo{Role: "follower", Raw: map[string]string{
+		"role": "follower", "leader": "n2", "term": "6",
+		"commit_index": "50", "apply_index": "50", "last_log_index": "50",
+		"connected_replicas": "0",
+	}}
+	next2, _ := m.Update(clusterInfoMsg{info: asFollower, gen: 1})
+	m = next2.(model)
+	v2 := m.View()
+	if !strings.Contains(v2, "follower") {
+		t.Fatalf("view did not reflect role change to follower:\n%s", v2)
+	}
+	if !strings.Contains(v2, "n2") {
+		t.Fatalf("view did not reflect new leader n2:\n%s", v2)
+	}
+}
+
 func TestLog_TrimsToMaxScrollback(t *testing.T) {
 	m := freshModel(t)
 	for i := 0; i < maxScrollback+50; i++ {
