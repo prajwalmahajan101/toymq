@@ -299,7 +299,7 @@ func TestUpdate_ClusterLeaderChangeReflected(t *testing.T) {
 	asLeader := client.ReplicationInfo{Role: "leader", Raw: map[string]string{
 		"role": "leader", "leader": "n1", "term": "5",
 		"commit_index": "42", "apply_index": "42", "last_log_index": "42",
-		"connected_replicas": "2",
+		"connected_replicas":     "2",
 		"replica_n2_match_index": "42", "replica_n2_lag_entries": "0",
 		"replica_n3_match_index": "40", "replica_n3_lag_entries": "2",
 	}}
