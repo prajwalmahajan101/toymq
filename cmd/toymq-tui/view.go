@@ -179,8 +179,9 @@ func (m model) renderClusterView(headerH, footerH int) string {
 				fmt.Sprintf("peer detail is leader-only; this node is %s (leader=%s)",
 					raw["role"], raw["leader"]))
 		} else {
-			lines = append(lines, fmt.Sprintf("replicas (%s):", raw["connected_replicas"]))
-			lines = append(lines, fmt.Sprintf("  %-16s %14s %10s", "PEER", "MATCH_INDEX", "LAG"))
+			lines = append(lines,
+				fmt.Sprintf("replicas (%s):", raw["connected_replicas"]),
+				fmt.Sprintf("  %-16s %14s %10s", "PEER", "MATCH_INDEX", "LAG"))
 			lines = append(lines, peers...)
 		}
 	}
