@@ -12,6 +12,11 @@ import (
 const (
 	maxScrollback = 1000
 	opTimeout     = 5 * time.Second
+	// clusterPollInterval is how often the cluster view re-polls INFO
+	// replication while open. Toy scale: a 1s local read is plenty
+	// live and cheap. See TOYRAFT-MIGRATION-REPORT FRICTION-07 (no
+	// commit-notify signal, so a poll is the honest option).
+	clusterPollInterval = 1 * time.Second
 )
 
 // state is the top-level UI state. Modal states own keyboard focus
@@ -22,6 +27,7 @@ const (
 	stateMain state = iota
 	statePubModal
 	stateSubModal
+	stateClusterView
 	stateDisconnected
 )
 
@@ -34,6 +40,10 @@ const (
 type brokerConn interface {
 	Pub(ctx context.Context, topic, dedupeKey, routingKey string, payload []byte) (uint64, bool, error)
 	Sub(ctx context.Context, topic, consumerID string) (<-chan client.Delivery, error)
+	// Info reads replication state (v3 M4, ADR 0033). A local read on
+	// any node — no leader redirect — so the cluster view can poll the
+	// held connection directly.
+	Info(ctx context.Context) (client.ReplicationInfo, error)
 	Err() error
 	Close() error
 }
@@ -78,6 +88,14 @@ type model struct {
 
 	// transportErr captures the error that closed the conn, if any.
 	transportErr error
+
+	// cluster view state (v3 M5). clusterInfo is the last INFO
+	// replication snapshot; clusterErr the last poll error. pollGen
+	// tags each poll chain so a stale ticker (from a prior `c` entry)
+	// self-expires instead of double-polling.
+	clusterInfo client.ReplicationInfo
+	clusterErr  error
+	pollGen     int
 
 	width, height int
 }

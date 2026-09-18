@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/prajwalmahajan101/toymq/pkg/client"
@@ -41,6 +42,25 @@ func readDeliveryCmd(ch <-chan client.Delivery, errFn func() error) tea.Cmd {
 		}
 		return msgArrivedMsg{d: d}
 	}
+}
+
+// clusterInfoCmd polls INFO replication on a background goroutine and
+// returns a clusterInfoMsg tagged with gen (v3 M5).
+func clusterInfoCmd(ctx context.Context, c brokerConn, gen int) tea.Cmd {
+	return func() tea.Msg {
+		callCtx, cancel := context.WithTimeout(ctx, opTimeout)
+		defer cancel()
+		info, err := c.Info(callCtx)
+		return clusterInfoMsg{info: info, err: err, gen: gen}
+	}
+}
+
+// clusterPollTick schedules the next cluster poll after
+// clusterPollInterval, carrying gen so a stale chain can be dropped.
+func clusterPollTick(gen int) tea.Cmd {
+	return tea.Tick(clusterPollInterval, func(time.Time) tea.Msg {
+		return clusterPollTickMsg{gen: gen}
+	})
 }
 
 // ackCmd runs Delivery.Ack on a background goroutine.
