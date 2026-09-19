@@ -80,3 +80,24 @@ shaped the design:
   in M3.
 - Standalone and single-node `--replicate` paths are unchanged (empty `--peers`);
   the M1 regression suite stays green.
+
+## Addendum (v3 M6) — unauthenticated transport & the public-bind guard
+
+The toyraft peer transport is **unauthenticated and plaintext**: its threat model
+is a trusted network (there is no per-peer auth, no TLS on the raft plane). That is
+acceptable for a toy cluster on a private network or loopback, but binding
+`--raft-addr` to a public/wildcard interface silently exposes an unauthenticated
+Propose/Step surface to anyone who can reach the port.
+
+**Decision:** `config.validate()` refuses a public raft bind by default. When
+`--peers` is set, `isPublicBind(RaftAddr)` rejects an empty/wildcard host
+(`0.0.0.0`, `::`) or a literal IP that is neither loopback nor private; a non-IP
+hostname is left to the operator (cannot be classified without DNS). The escape
+hatch is the explicit `--raft-allow-public-bind` flag — the operator affirms the
+network is trusted. This mirrors the redis "protected mode" posture and keeps the
+default safe without adding auth to the raft plane (real peer auth/TLS is out of
+scope for v3, tracked for v4).
+
+**Consequence:** `docker-compose.cluster.yml` binds the wildcard `0.0.0.0:7000`
+inside its private compose network, so it passes `--raft-allow-public-bind`
+deliberately — the one intended, documented use of the override.
