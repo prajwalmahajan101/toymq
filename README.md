@@ -138,6 +138,43 @@ toymqctl sub orders consumer-2 --max-msgs 1
 
 ---
 
+## Cluster quickstart (v3)
+
+`toymq --replicate --peers …` forms a replicated cluster on embedded
+[toyraft](https://github.com/prajwalmahajan101/toyraft): every mutating command
+is committed through raft, writes go to the elected leader, and a leader kill
+elects a new one with no acked-write loss. Clients pass `--cluster` with the
+member list and follow `NOTLEADER` redirects automatically.
+
+Fastest path — a local 3-node cluster via Docker Compose:
+
+```bash
+docker compose -f docker-compose.cluster.yml up -d --build
+
+# Client members: n1 :6789, n2 :6889, n3 :6989
+MEMBERS=n1@localhost:6789,n2@localhost:6889,n3@localhost:6989
+
+# Publish (redirects to the leader automatically) and read the topology.
+toymqctl pub --cluster $MEMBERS orders "hello from the cluster"
+toymqctl info --cluster $MEMBERS          # role, leader, per-follower lag/offsets
+
+# Durability barrier: block until N replicas hold the write (v3 M4).
+toymqctl pub --cluster $MEMBERS --wait 2 --wait-timeout-ms 2000 orders "acked by a majority"
+
+docker compose -f docker-compose.cluster.yml down -v
+```
+
+Kill the leader container (`docker stop toymq-n1`) and the next `pub` transparently
+redirects to the newly elected leader — the `--cluster` client sweeps the members
+and retries under a bounded backoff.
+
+> **Security:** the raft peer transport is unauthenticated and plaintext — its
+> threat model is a trusted network. `toymq` refuses to bind `--raft-addr` to a
+> public/wildcard interface unless you pass `--raft-allow-public-bind` (ADR 0030).
+> Run a cluster only on a private network or loopback.
+
+---
+
 ## Wire protocol
 
 Line-oriented, length-prefixed for binary payloads. The wire is
@@ -573,6 +610,48 @@ toymq-bench --addr :6789 --producers 4 --msgs 2000 --size 256
 Tmpfs (`/tmp` on most Linux distros) makes fsync nearly free —
 benchmarks against `/tmp` will show 50–100× the throughput in the
 table above. Use a real disk path if you want the durability story.
+
+### Replication cost (v3)
+
+`toymq-bench --peers …` drives the same load through the
+redirect-following cluster client so the replicated path can be compared to
+standalone. To isolate the **raft commit cost** from disk fsync, both runs below
+use a tmpfs data dir (fsync ≈ free) — the delta is the consensus round-trip, not
+the disk.
+
+**Workload:** 4 producers, 2000 × 256-byte messages, per-message durability, on a
+3-node loopback cluster (`docker-compose.cluster.yml` shape).
+
+| Mode | Throughput | p50 | p95 | p99 |
+|---|---|---|---|---|
+| standalone | 26,392 msg/s | 114 µs | 319 µs | 677 µs |
+| replicated (3-node) | 2,485 msg/s | 1.3 ms | 3.1 ms | 4.4 ms |
+| **consensus tax** | **~10.6× drop** | **~11.4×** | **~9.7×** | **~6.5×** |
+
+The tail gap narrows (6.5× at p99 vs 11.4× at p50): standalone p99 already carries
+fsync/scheduling jitter, so the consensus round-trip adds proportionally less there.
+
+Each replicated PUB blocks until the entry commits — a full raft round-trip. Up
+through toyraft rc.3 that round-trip was gated by the leader's heartbeat/commit
+tick (~150 ms per op), so the replicated path was pinned to a tick floor. toyraft
+**v1.0.0** flushes the raft state on Propose (FRICTION-08), so a commit no longer
+waits for the next tick: per-op p50 drops from ~150 ms to ~1.3 ms — a ~100×
+improvement — and single-op throughput rises from ~32 to ~2,485 msg/s.
+
+The replicated path is still **latency-bound** relative to standalone: every PUB
+pays one consensus round-trip (~1–2 ms on loopback) that a standalone append does
+not. Amortizing it further (batching, many concurrent producers, or `WAIT 0`
+leader-local commits) is the way to close the remaining gap. This is the honest
+price of consensus at toy scale, recorded rather than hidden (see the
+[migration report](./docs/TOYRAFT-MIGRATION-REPORT.md)).
+
+Reproduce the cluster row:
+
+```bash
+docker compose -f docker-compose.cluster.yml up -d --build
+toymq-bench --peers n1@localhost:6789,n2@localhost:6889,n3@localhost:6989 \
+  --producers 4 --msgs 2000 --size 256
+```
 
 ---
 
