@@ -6,16 +6,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### v3.0.0 (draft — pending toyraft `v1.0.0` tag)
+## [3.0.0] — 2026-09-19
 
 The **distributed** line (v3 M1–M6): opt-in multi-node replication on embedded
 [toyraft](https://github.com/prajwalmahajan101/toyraft). Standalone mode is
 unchanged and remains the default; everything below is gated behind `--replicate`.
-The `v3.0.0` tag is held until toyraft tags `v1.0.0` off this integration's
-dogfood feedback ([migration report](./docs/TOYRAFT-MIGRATION-REPORT.md)), at
-which point the `rc.3 → v1.0.0` dependency bump lands with the release.
+This release lands the `toyraft rc.3 → v1.0.0` dependency bump — toyraft tagged
+`v1.0.0` off this integration's dogfood feedback ([migration
+report](./docs/TOYRAFT-MIGRATION-REPORT.md)).
 
-#### Added
+### Added
 
 - **Raft-replicated broker** (`--replicate`) — every mutating command
   (PUB/ACK/NACK/CREATE) is committed through raft before it is applied; the WAL
@@ -214,7 +214,8 @@ as minor versions.
 
 <!-- Compare links. -->
 
-[Unreleased]: https://github.com/prajwalmahajan101/toymq/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/prajwalmahajan101/toymq/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/prajwalmahajan101/toymq/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/prajwalmahajan101/toymq/compare/v1.3.0...v2.0.0
 [1.3.0]: https://github.com/prajwalmahajan101/toymq/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/prajwalmahajan101/toymq/compare/v1.1.0...v1.2.0
