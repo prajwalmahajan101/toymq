@@ -84,6 +84,44 @@ archives:
       - LICENSE
       - docs/adr/README.md
 
+# OCI images. One image, both cluster roles selected by flags at runtime
+# (leader/follower is not a build-time distinction). Multi-arch via a manifest
+# over per-arch images. Cross-arch builds need buildx + qemu; `goreleaser check`
+# validates the config without building.
+dockers:
+  - id: toymq-amd64
+    ids: [toymq]
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    image_templates:
+      - "ghcr.io/prajwalmahajan101/toymq:{{ .Version }}-amd64"
+      - "ghcr.io/prajwalmahajan101/toymq:latest-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+  - id: toymq-arm64
+    ids: [toymq]
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    image_templates:
+      - "ghcr.io/prajwalmahajan101/toymq:{{ .Version }}-arm64"
+      - "ghcr.io/prajwalmahajan101/toymq:latest-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+
+docker_manifests:
+  - name_template: "ghcr.io/prajwalmahajan101/toymq:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/prajwalmahajan101/toymq:{{ .Version }}-amd64"
+      - "ghcr.io/prajwalmahajan101/toymq:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/prajwalmahajan101/toymq:latest"
+    image_templates:
+      - "ghcr.io/prajwalmahajan101/toymq:latest-amd64"
+      - "ghcr.io/prajwalmahajan101/toymq:latest-arm64"
+
 checksum:
   name_template: SHA256SUMS
   algorithm: sha256
