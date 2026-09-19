@@ -66,8 +66,13 @@ func idx(n, p int) int {
 // writeReport emits the human-readable stats block. Fields are
 // labelled and tab-aligned so the output stays grep-friendly.
 func writeReport(w io.Writer, s Stats, cfg benchConfig) {
-	fmt.Fprintf(w, "toymq-bench  addr=%s  topic=%s  producers=%d  msgs=%d  size=%d  partitions=%d  fsync=%s  tls=%t\n",
-		cfg.Addr, cfg.Topic, cfg.Producers, cfg.Msgs, cfg.Size, cfg.Partitions, cfg.Fsync, cfg.TLS)
+	// Label the target so standalone vs replicated runs are self-documenting.
+	target := fmt.Sprintf("addr=%s  mode=standalone", cfg.Addr)
+	if cfg.Peers != "" {
+		target = fmt.Sprintf("peers=%s  mode=cluster", cfg.Peers)
+	}
+	fmt.Fprintf(w, "toymq-bench  %s  topic=%s  producers=%d  msgs=%d  size=%d  partitions=%d  fsync=%s  tls=%t\n",
+		target, cfg.Topic, cfg.Producers, cfg.Msgs, cfg.Size, cfg.Partitions, cfg.Fsync, cfg.TLS)
 	fmt.Fprintf(w, "elapsed     %s\n", s.Elapsed.Round(time.Millisecond))
 	fmt.Fprintf(w, "throughput  %.1f msg/s   %.2f MiB/s\n", s.Throughput, s.MiBPerSec)
 	// Per-partition throughput. Keyless publishes round-robin across the N

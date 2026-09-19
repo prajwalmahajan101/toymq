@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -26,7 +27,13 @@ const (
 // benchConfig is the resolved set of CLI knobs. Validation happens
 // in parseFlags so run() can be tested without touching os.Exit.
 type benchConfig struct {
-	Addr      string
+	Addr string
+	// Peers, when set, switches the bench to cluster mode: each producer dials
+	// the comma-separated members ("id@host:port" or "host:port") through a
+	// redirect-following client.ClusterClient (v3 M3, ADR 0032) and load is
+	// measured against the leader. Empty = standalone against Addr. The report
+	// labels the run so standalone vs replicated numbers are self-documenting.
+	Peers     string
 	Topic     string
 	Producers int
 	Msgs      int
@@ -70,6 +77,28 @@ func benchDialOptions(cfg benchConfig) ([]client.Option, error) {
 	return opts, nil
 }
 
+// dialConn opens one producer connection. With -peers set it returns a
+// redirect-following ClusterClient (cluster mode); otherwise a single-connection
+// Client against -addr (standalone). Both satisfy publisher.
+func dialConn(ctx context.Context, cfg benchConfig, opts []client.Option) (publisher, error) {
+	if cfg.Peers != "" {
+		return client.DialCluster(ctx, splitPeers(cfg.Peers), opts...)
+	}
+	return client.Dial(ctx, cfg.Addr, opts...)
+}
+
+// splitPeers turns "id@host:port, host:port,…" into a trimmed member slice,
+// dropping empty entries. DialCluster accepts both the id-tagged and bare forms.
+func splitPeers(raw string) []string {
+	var out []string
+	for m := range strings.SplitSeq(raw, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	cfg, code := parseFlags(args, stderr)
 	if code != exitOK {
@@ -82,22 +111,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	clients := make([]*client.Client, cfg.Producers)
+	conns := make([]publisher, cfg.Producers)
 	for i := 0; i < cfg.Producers; i++ {
 		dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-		c, err := client.Dial(dialCtx, cfg.Addr, dialOpts...)
+		c, err := dialConn(dialCtx, cfg, dialOpts)
 		cancel()
 		if err != nil {
 			fmt.Fprintf(stderr, "toymq-bench: dial #%d: %v\n", i, err)
 			for j := 0; j < i; j++ {
-				_ = clients[j].Close()
+				_ = conns[j].Close()
 			}
 			return exitErr
 		}
-		clients[i] = c
+		conns[i] = c
 	}
 	defer func() {
-		for _, c := range clients {
+		for _, c := range conns {
 			_ = c.Close()
 		}
 	}()
@@ -106,7 +135,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// so keyless publishes round-robin across partitions.
 	if cfg.Partitions > 1 {
 		createCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-		err := clients[0].Create(createCtx, cfg.Topic, cfg.Partitions)
+		err := conns[0].Create(createCtx, cfg.Topic, cfg.Partitions)
 		cancel()
 		if err != nil {
 			fmt.Fprintf(stderr, "toymq-bench: create topic: %v\n", err)
@@ -124,7 +153,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i] = runProducer(ctx, clients[i], cfg.Topic, per[i], payload)
+			results[i] = runProducer(ctx, conns[i], cfg.Topic, per[i], payload)
 		}(i)
 	}
 	wg.Wait()
@@ -143,7 +172,8 @@ func parseFlags(args []string, stderr io.Writer) (benchConfig, int) {
 	fs.SetOutput(stderr)
 
 	cfg := benchConfig{}
-	fs.StringVar(&cfg.Addr, "addr", config.DefaultAddr, "broker address")
+	fs.StringVar(&cfg.Addr, "addr", config.DefaultAddr, "broker address (standalone mode)")
+	fs.StringVar(&cfg.Peers, "peers", "", "comma-separated cluster members (id@host:port,...) — enables redirect-following cluster mode; overrides -addr")
 	fs.StringVar(&cfg.Topic, "topic", "bench", "topic to publish to")
 	fs.IntVar(&cfg.Producers, "producers", 4, "concurrent producer goroutines")
 	fs.IntVar(&cfg.Msgs, "msgs", 10000, "total messages across all producers")

@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"time"
-
-	"github.com/prajwalmahajan101/toymq/pkg/client"
 )
 
 // result holds one producer goroutine's measurements. Aggregation
@@ -15,10 +13,19 @@ type result struct {
 	pubErrs   int
 }
 
+// publisher is the request surface the bench drives. Both *client.Client
+// (standalone) and *client.ClusterClient (redirect-following, --peers) satisfy
+// it, so the same producer loop measures either mode with no branching.
+type publisher interface {
+	Pub(ctx context.Context, topic, dedupeKey, routingKey string, payload []byte) (msgID uint64, dup bool, err error)
+	Create(ctx context.Context, topic string, partitions int) error
+	Close() error
+}
+
 // runProducer publishes count messages on c, recording per-message
 // latency. Errors are counted but not fatal — a slow broker should
 // produce a noisy report, not a crashed bench.
-func runProducer(ctx context.Context, c *client.Client, topic string,
+func runProducer(ctx context.Context, c publisher, topic string,
 	count int, payload []byte) result {
 	out := result{latencies: make([]time.Duration, 0, count)}
 	for i := 0; i < count; i++ {
