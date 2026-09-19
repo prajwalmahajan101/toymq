@@ -6,6 +6,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### v3.0.0 (draft — pending toyraft `v1.0.0` tag)
+
+The **distributed** line (v3 M1–M6): opt-in multi-node replication on embedded
+[toyraft](https://github.com/prajwalmahajan101/toyraft). Standalone mode is
+unchanged and remains the default; everything below is gated behind `--replicate`.
+The `v3.0.0` tag is held until toyraft tags `v1.0.0` off this integration's
+dogfood feedback ([migration report](./docs/TOYRAFT-MIGRATION-REPORT.md)), at
+which point the `rc.3 → v1.0.0` dependency bump lands with the release.
+
+#### Added
+
+- **Raft-replicated broker** (`--replicate`) — every mutating command
+  (PUB/ACK/NACK/CREATE) is committed through raft before it is applied; the WAL
+  carries a raft-index high-water for idempotent replay (M1, ADR 0028/0029).
+- **Multi-node clusters** (`--peers id@url,… --raft-addr host:port`) — 3/5/7-node
+  replication with leader election; writes are leader-gated (`NOTLEADER` wire code),
+  survive leader kills and network partitions with zero acked-write loss (M2,
+  ADR 0030/0031).
+- **Redirect-following client** — `client.ClusterClient` and `--cluster` on
+  `toymqctl`/`toymq-tui`/`toymq-bench` follow `NOTLEADER` to the leader; `--stale`
+  opts into follower-local reads (M3, ADR 0032).
+- **Replication acknowledgement** — `PUB … WAIT <n> <timeout-ms>` blocks until `n`
+  followers hold the entry; `INFO replication` reports role/leader/offsets/per-peer
+  lag; raft gauges on the metrics endpoint (M4, ADR 0033).
+- **Cluster TUI pane** — live topology (leader, roles, lag) in `toymq-tui` (M5).
+- **Cluster benchmark** — `toymq-bench --peers …` measures the replicated path;
+  `docker-compose.cluster.yml` for a local 3-node cluster; goreleaser OCI image.
+- **Raft bind guard** — `toymq` refuses to bind the unauthenticated raft transport
+  to a public/wildcard address unless `--raft-allow-public-bind` is set (M6,
+  ADR 0030 addendum).
+
 ## [2.0.0] — 2026-07-10
 
 The **"Useful" single-node** line (v2 M1–M8). Makes ToyMQ usable for

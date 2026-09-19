@@ -547,12 +547,12 @@ specified in [v4.0 → Upstream work items](#upstream-work-items-detailed--land-
 
 | Milestone | Title | Status | PR | Tag |
 |---|---|---|---|---|
-| v3 M1 | Raft embedding + single-node replicated path | 📋 Planned (buildable now) | — | — |
-| v3 M2 | Multi-node replication + leader election | 🚧 M2a+M2b done (`feat/cluster`, ADR 0030/0031) | — | — |
+| v3 M1 | Raft embedding + single-node replicated path | ✅ Done (`feat/cluster`, ADR 0028/0029) | — | — |
+| v3 M2 | Multi-node replication + leader election | ✅ Done (`feat/cluster`, ADR 0030/0031) | — | — |
 | v3 M3 | Client routing: write redirect + read model | ✅ Done (`feat/cluster-routing`, ADR 0032) | — | — |
 | v3 M4 | `WAIT` + INFO replication + cluster observability | ✅ Done (`feat/wait-info-repl`, ADR 0033) | — | — |
 | v3 M5 | TUI v3: cluster view | ✅ Done (`feat/tui-v3`) | — | — |
-| v3 M6 | Bench + dogfood report + polish + v3.0.0 | 📋 Planned | — | `v3.0.0` |
+| v3 M6 | Bench + dogfood report + polish + v3.0.0 | 🚧 In progress (`feat/release-v3`) | — | `v3.0.0` |
 
 Every committed milestone is **buildable on toyraft `rc.3` as it stands today** —
 the replication-only cut deliberately avoids the three upstream gaps (UP-1/UP-2/

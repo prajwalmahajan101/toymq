@@ -1,7 +1,7 @@
 # ToyRaft Migration & Dogfooding Report
 
 > **What this is.** toymq's v3.0 embeds
-> [`toyraft`](https://github.com/prajwalmahajan101/toyraft) `v1.0.0-rc.3` as its
+> [`toyraft`](https://github.com/prajwalmahajan101/toyraft) `v1.0.0` as its
 > consensus library (see [ROADMAP § v3.0](./ROADMAP.md#v300--distributed-multi-node-toyraft--committed)).
 > toyraft's own roadmap gates its `v1.0.0` tag on a **real consumer embedding it**;
 > toymq's cluster is that consumer. This document is the **reciprocal half of that
@@ -9,10 +9,14 @@
 > gaps, feature requests, and what worked) that flows back to toyraft to be triaged
 > into its `v1.0.0` release.
 
-> **Status:** 🟡 in progress — **v3 M1 complete** (single-node replicated path).
-> The findings below are recorded from running embedded code, each with a repro.
-> **All six M1 findings were fixed upstream in `toyraft v1.0.0-rc.3`; toymq is
-> bumped to rc.3** (ADR 0029). M2–M6 are not yet run. It is **authored incrementally, not
+> **Status:** 🟢 delivered (v3 M6) — **v3 M1–M6 integration complete**
+> (single-node replicated path → multi-node + election → client routing → `WAIT`/INFO
+> → cluster TUI → bench/release). Every finding below is recorded from running
+> embedded code, each with a repro. **All findings are now closed upstream: the six
+> M1 findings shipped in `toyraft v1.0.0-rc.3`; the remaining five (FRICTION-05/06/07/08,
+> DOC-02) shipped in `toyraft v1.0.0`.** toymq is bumped `rc.3 → v1.0.0`, its
+> workarounds for those five are retired, and the mutual unblock is **closed** —
+> **0 open findings** (§7). It is **authored incrementally, not
 > pre-written** — findings are recorded here **only once observed against running
 > embedded code**, each with a repro. Analysis-derived expectations (the readiness
 > audit, known upstream gaps) live in the roadmap's
@@ -33,7 +37,7 @@ code.
 | v3 M3 — client routing | `LeaderHint`/`ErrNotLeader` redirect ergonomics |
 | v3 M4 — `WAIT` + INFO repl | `Status()` / `MatchIndex` fitness for ack-truth + lag reporting |
 | v3 M5 — cluster TUI | `Status()` polling ergonomics for a live view |
-| **v3 M6 — release** | **finalize**; dedupe; file the toyraft issues; deliver |
+| **v3 M6 — release** | commit-latency vs tick interval (from the cluster benchmark); **finalize**; dedupe; file the toyraft issues; deliver |
 
 **Discipline (from the toykv precedent):** a finding lands only when it is observed
 in integration with a repro. Findings are **not** invented from analysis to pad the
@@ -42,7 +46,7 @@ report — if M1–M5 never hit a predicted problem, it never appears here.
 ## Legend
 
 **Status** — `[confirmed-in-integration]` · `[fixed-upstream rc.3]` ·
-`[wontfix / by-design]`
+`[fixed-upstream v1.0.0]` · `[wontfix / by-design]`
 
 **Severity** — 🔴 blocker (integration cannot meet an exit criterion) · 🟠 friction
 (workable, but costs code or clarity) · 🟡 papercut (minor) · 🟢 praise (worked well)
@@ -69,10 +73,11 @@ Places where the frozen public API is workable but cost toymq extra code or clar
 | FRICTION-01 | 🟠 | [fixed-upstream rc.3] | **`Propose` discards the `Apply` result.** `raft.Node.Propose` returns `(Index, Term, error)` and drops `Apply`'s `any` return, so a PUB's WAL-assigned MsgID cannot come back through `Propose`. toymq had to build a nonce-result registry (`internal/replication/registry.go`): the leader stamps a nonce, registers a channel, and `Apply` resolves it. The rc.2 reference `kvsm` hits the same wall — it exposes a separate `Get` for exactly this reason. **Request:** return the apply result from `Propose`, or expose a typed result channel. `pkg/raft`. |
 | FRICTION-02 | 🟠 | [fixed-upstream rc.3] | **`inproc` transport unusable by external embedders.** `inproc.HubConfig.Clock` is typed `internal/clock.Clock` — an external module cannot construct it — and `NewHub` hard-errors on a nil Clock. So the in-process transport (ideal for a single-node embed and for tests) cannot be built outside the toyraft module. `pkg/transport/inproc`. |
 | FRICTION-03 | 🟠 | [fixed-upstream rc.3] | **No transport expresses a `peers=[self]` cluster.** `http.Config.Validate` rejects an empty `PeerURLs` *and* rejects this node's own ID in `PeerURLs`. A single-node cluster (peers == [self], so `PeerURLs` excludes self → empty) satisfies neither. Combined with FRICTION-02, **neither shipped transport can build a single-node cluster**; toymq supplies a local no-op `raft.Transport` (`internal/replication/transport.go`). `pkg/transport/http`. |
-| FRICTION-05 | 🟡 | [confirmed-in-integration] | **No single predicate for "cannot serve as leader."** Redirecting a client around a failing leader (v3 M3, ADR 0032) must treat three distinct errors identically: `*raft.ErrNotLeader` (write hit a follower), `raft.ErrProposalDropped` (leadership lost mid-propose), and `raft.ErrStopped` (node stopping). Each is correct behaviour, but every embedder must rediscover that all three mean "redirect elsewhere"; toymq matches all three in `Broker.NotLeaderHint`. **Request:** a documented predicate (`raft.IsNotLeader(err) bool`) or shared sentinel so consumers don't hand-roll the classification. Behaviour is fine — only the ergonomics. `pkg/raft`. |
-| FRICTION-06 | 🟡 | [confirmed-in-integration] | **`Status().MatchIndex` includes the leader's own entry.** Building `PUB … WAIT <n>` (ADR 0033) — "OK once `n` *followers* hold the index" — the natural count is `len({peer : MatchIndex[peer] >= idx})`. But on a leader `MatchIndex` carries a key for the node *itself* (at `LastLogIndex`), so a naive count is off by one and `WAIT n` is satisfied by `n-1` real followers. **Confirmed:** a 3-node leader's `MatchIndex` has 3 keys `{n1,n2,n3}` including self; `WAIT 2` passed with only one reachable follower until self was excluded (`internal/broker/cluster_wait_test.go`, `TestPublishWaitTimeoutPartitionedFollower` initially green-when-it-should-fail). toymq now captures its own `NodeID` at `AttachRaft` and filters it out. **Request:** document that `MatchIndex` includes self (or exclude it), and expose the node's own `NodeID` on the `Node` interface — there is no accessor today, so an embedder must thread its config id in by hand. `pkg/raft` (`status.go`, `node_public.go`). |
-| FRICTION-07 | 🟢 | [confirmed-in-integration] | **No commit-notify / match-index-advance signal for a `WAIT` barrier.** `WAIT` must block until followers catch up, but `Status()` is a poll-only snapshot — there is no channel or callback that fires when a follower's `MatchIndex` advances. toymq polls `Status()` on a 5ms ticker (`Broker.waitForReplication`), which is fine at toy scale but is busy-work an event would remove. **Request (low priority):** an optional "commit/match advanced" notification so a `WAIT`-style barrier can block without polling. Poll works; this is pure efficiency. `pkg/raft`. |
+| FRICTION-05 | 🟡 | [fixed-upstream v1.0.0] | **No single predicate for "cannot serve as leader."** Redirecting a client around a failing leader (v3 M3, ADR 0032) must treat three distinct errors identically: `*raft.ErrNotLeader` (write hit a follower), `raft.ErrProposalDropped` (leadership lost mid-propose), and `raft.ErrStopped` (node stopping). Each is correct behaviour, but every embedder must rediscover that all three mean "redirect elsewhere"; toymq matched all three in `Broker.NotLeaderHint`. **Fixed in v1.0.0:** toyraft ships `raft.IsNotLeader(err) bool` (`errors.go`) covering all three. toymq now delegates the classification to the predicate and keeps `errors.As` only to prefer the typed `LeaderHint` — the hand-rolled 3-error match is retired. `pkg/raft`. |
+| FRICTION-06 | 🟡 | [fixed-upstream v1.0.0] | **`Status().MatchIndex` includes the leader's own entry.** Building `PUB … WAIT <n>` (ADR 0033) — "OK once `n` *followers* hold the index" — the natural count is `len({peer : MatchIndex[peer] >= idx})`. But on a leader `MatchIndex` carries a key for the node *itself* (at `LastLogIndex`), so a naive count is off by one and `WAIT n` is satisfied by `n-1` real followers. **Confirmed:** a 3-node leader's `MatchIndex` has 3 keys `{n1,n2,n3}` including self; `WAIT 2` passed with only one reachable follower until self was excluded (`internal/broker/cluster_wait_test.go`, `TestPublishWaitTimeoutPartitionedFollower` initially green-when-it-should-fail). toymq captured its own `NodeID` at `AttachRaft` and filtered it out. **Fixed in v1.0.0:** toyraft adds `raft.Node.NodeID() NodeID` (`node_public.go`) and documents the self-inclusion in `status.go`. toymq now compares against `b.raft.NodeID()` directly — the `selfID` field threaded in at `AttachRaft` is retired. `pkg/raft` (`status.go`, `node_public.go`). |
+| FRICTION-07 | 🟢 | [fixed-upstream v1.0.0] | **No commit-notify / match-index-advance signal for a `WAIT` barrier.** `WAIT` must block until followers catch up, but `Status()` is a poll-only snapshot — there is no channel or callback that fires when a follower's `MatchIndex` advances. toymq polled `Status()` on a 5ms ticker (`Broker.waitForReplication`), fine at toy scale but busy-work an event would remove. **Fixed in v1.0.0:** toyraft adds `raft.Node.NotifyC() <-chan struct{}` — a coalescing, level-triggered progress signal. toymq now blocks on `NotifyC()` and re-reads `followerAckCount` after each wake; the 5ms poll ticker is retired. `pkg/raft`. |
 | FRICTION-04 | 🟠 | [confirmed-in-integration] | **The driver calls `Transport.Send` synchronously, but the http `Send` blocks → an embedder must write an async wrapper for liveness.** `pkg/raft/driver.go` sends outbound messages inline in its single driver goroutine (`for _, m := range msgs { Transport.Send(ctx, m) }`), and `pkg/transport/http` `client.Send` is a blocking POST with retries + `SendTimeout`. So one dead or slow peer stalls the driver: no ticks, no commits, no election — a cluster-wide liveness failure, not just a lost message. Every embedder using the http transport must therefore decorate it with a per-peer async queue. toymq ships `internal/replication.asyncTransport` (buffered per-peer send + pump goroutine, drop-on-full, matching the best-effort `Send` contract). **Request:** ship an async transport option in-tree, or make the driver fan out Sends off the tick loop, so embedders get liveness by default. `pkg/raft` (`driver.go`) + `pkg/transport/http`. |
+| FRICTION-08 | 🟡 | [fixed-upstream v1.0.0] | **Commit latency is floored by the heartbeat/tick interval — `Propose` does not flush AppendEntries immediately.** A new entry was replicated to followers only on the next driver tick, not the moment it was proposed, so a single in-flight write waited ≈1 tick to reach a follower plus ≈1 to get the ack back. On a **loopback** 3-node cluster (no network cost) per-op PUB latency was therefore ~150ms — the tick cycle, not the wire — collapsing single-op throughput. **Confirmed via `toymq-bench --peers`** (3-node loopback, 4 producers × 2000 × 256B, tmpfs so fsync ≈ free): 32 msg/s, p50 148.7ms / p95 150.6ms / p99 151ms, vs standalone 28,944 msg/s, p50 120µs. The tail clustering tightly at ~150ms was the tell-tale of a fixed tick period. **Fixed in v1.0.0:** toyraft flushes the raft state on `Propose` (internal `wake` chan; no API change), so a commit no longer waits for the next tick. **Re-benched** (same shape, v1.0.0): 2,485 msg/s, p50 1.3ms / p95 3.1ms / p99 4.4ms — a ~100× per-op latency drop, no toymq change needed (README §Benchmarks → Replication cost). `pkg/raft` (`driver.go`). |
 
 ---
 
@@ -96,7 +101,7 @@ each cost integration time or risked a correctness bug.
 
 | ID | Severity | Status | Gap |
 |---|---|---|---|
-| DOC-02 | 🟡 | [confirmed-in-integration] | **`Status().MatchIndex` self-inclusion and `LastLogIndex` semantics are undocumented for a lag/ack use.** The `status.go` field comments name the fields but not that `MatchIndex` includes the leader itself (FRICTION-06) nor that `LastLogIndex >= CommitIndex >= ApplyIndex` is the invariant an INFO/lag view relies on. Both were learned by printing the map in a test. A one-line note per field ("includes self", "monotonic, >= CommitIndex") would have saved the round trip. `pkg/raft` (`status.go`). |
+| DOC-02 | 🟡 | [fixed-upstream v1.0.0] | **`Status().MatchIndex` self-inclusion and `LastLogIndex` semantics are undocumented for a lag/ack use.** The `status.go` field comments named the fields but not that `MatchIndex` includes the leader itself (FRICTION-06) nor that `LastLogIndex >= CommitIndex >= ApplyIndex` is the invariant an INFO/lag view relies on. Both were learned by printing the map in a test. **Fixed in v1.0.0:** `status.go` now documents the `MatchIndex` self-inclusion and the field invariant — docs-only, no toymq change. `pkg/raft` (`status.go`). |
 | DOC-01 | 🟡 | [fixed-upstream rc.3] | **No guidance on transport choice for an external embedder.** The constraints that rule out both shipped transports for a single node (FRICTION-02/03) are only discoverable by hitting the `NewHub`/`Validate` errors at runtime. A short "embedding toyraft: transports" note — or an exported single-node/no-op transport — would have saved the round trip. `pkg/transport`. |
 
 ---
@@ -314,8 +319,56 @@ made the `RaftCollector` (M4) clean.
   redirect. `Status()` is sufficient to follow elections from a single held conn.
 
 ### v3 M6 — finalize & deliver
-_Not started._ Dedupe findings, open the toyraft issues, deliver as the `v1.0.0`
-dogfood-gate feedback.
+
+**Integrated (toymq-side):** cluster benchmark (replication cost vs standalone),
+cluster docs + `docker-compose.cluster.yml`, the unauthenticated-transport bind
+guard, and a leader/follower-capable release image. No new toyraft call path — the
+same API surface M1–M5 drove.
+
+**Surfaced:** one new observation. Actually running the cluster benchmark exposed
+**FRICTION-08 (§2)** — per-op commit latency is floored by the raft tick/heartbeat
+interval (~150ms on loopback, where there is no network cost), because `Propose`
+does not flush an AppendEntries immediately. Confirmed with `toymq-bench --peers`
+(3-node loopback, tmpfs): 32 msg/s / p50 148.7ms vs standalone 28,944 msg/s /
+p50 120µs. Low priority — expected raft behaviour, amortized by concurrency — but
+a real measured cost, so recorded rather than hidden. The other M6 work confirmed
+existing entries without uncovering more: `Status()` stayed the only cluster
+observability surface needed (M4/M5), and the async-transport requirement
+(FRICTION-04) held under sustained benchmark load with no additional liveness gap.
+
+**Final tally (M1–M6 integration):** 1 bug · 8 friction · 1 feature request ·
+2 docs gaps · 3 praise. Closed upstream in rc.3: BUG-01, FRICTION-01/02/03/04,
+FEAT-01, DOC-01 — each re-verified against rc.3 in-tree (`TestReplicatedRestartRecovery`,
+nonce-registry deletion, no-op-transport-now-optional, async decorator retained by
+choice). The last five — FRICTION-05/06/07/08, DOC-02 — closed upstream in `v1.0.0`
+(see the closeout below). **0 open findings.**
+
+**Delivered:** this document is the finalized `v1.0.0` dogfood-gate feedback. Every
+open item was triaged into toyraft `v1.0.0`; toymq bumped `rc.3 → v1.0.0` and the
+mutual unblock is closed.
+
+### v1.0.0 closeout — bump + retire workarounds
+
+toyraft tagged **v1.0.0**, shipping fixes for the five remaining findings. toymq
+bumped `rc.3 → v1.0.0` (`go get …@v1.0.0 && go mod tidy`; v1.0.0 adds methods and
+removes nothing — an API-compatible superset, clean build) and consumed the new
+surface, deleting each workaround:
+
+- **FRICTION-05** → `raft.IsNotLeader(err)`: `Broker.NotLeaderHint` delegates the
+  redirect classification to the predicate; the hand-rolled 3-error match is gone.
+- **FRICTION-06** → `raft.Node.NodeID()`: the `selfID` field and the `AttachRaft`
+  param are dropped; self is excluded from `MatchIndex` via `b.raft.NodeID()`.
+- **FRICTION-07** → `raft.Node.NotifyC()`: `waitForReplication` blocks on the
+  coalescing progress signal; the 5ms poll ticker is gone.
+- **FRICTION-08** → flush-on-`Propose` (no API change): re-benched at 2,485 msg/s,
+  p50 1.3ms (was 32 msg/s, p50 148.7ms) — a ~100× per-op latency drop.
+- **DOC-02** → `status.go` now documents `MatchIndex` self-inclusion + the field
+  invariant; docs-only, no toymq change.
+
+Re-verified: `go build ./...` + `go test ./... -race` green (workarounds retired,
+behaviour unchanged), the `WAIT` suite green on `-race` (the `NotifyC` path returns
+only once ≥N real followers hold the index — same contract as the old poll), and
+`go list -m …/toyraft` reports `v1.0.0`.
 
 ---
 
@@ -330,5 +383,27 @@ At v3 M6 this report is finalized and delivered as toyraft's dogfood-gate feedba
    line — these unblock toymq **v4**, not v3.0.
 4. **Docs gaps (§4)** → toyraft README / `StateMachine` doc PRs.
 5. **Praise (§5)** → the decisions that worked, kept on record.
-6. **Dependency bump** → once toyraft tags `v1.0.0` off this feedback, toymq bumps
-   `rc.3 → v1.0.0` (v3 M6) and the mutual unblock closes.
+6. **Dependency bump** → toyraft tagged `v1.0.0` off this feedback; toymq bumped
+   `rc.3 → v1.0.0` (v3 M6) and the mutual unblock is closed. ✅ done.
+
+### Delivery inventory
+
+Every finding mapped to its handoff — **all closed upstream**: `[fixed-upstream
+rc.3]` shipped in rc.3, `[fixed-upstream v1.0.0]` shipped in v1.0.0, each verified
+in-tree.
+
+| ID | Status | Deliver as | toyraft area |
+|---|---|---|---|
+| BUG-01 | [fixed-upstream rc.3] | ✅ closed — `restoreLogFromStorage` | `pkg/raft` (`node.go`) |
+| FRICTION-01 | [fixed-upstream rc.3] | ✅ closed — `Propose` returns apply result | `pkg/raft` |
+| FRICTION-02 | [fixed-upstream rc.3] | ✅ closed — `inproc` nil-clock default | `pkg/transport/inproc` |
+| FRICTION-03 | [fixed-upstream rc.3] | ✅ closed — http self-only cluster | `pkg/transport/http` |
+| FRICTION-04 | [fixed-upstream rc.3] | ✅ closed — async transport / driver fan-out | `pkg/raft` (`driver.go`) + `pkg/transport/http` |
+| FEAT-01 | [fixed-upstream rc.3] | ✅ closed — durable applied-index checkpoint | `pkg/raft` |
+| DOC-01 | [fixed-upstream rc.3] | ✅ closed — transport-choice guidance | `pkg/transport` |
+| FRICTION-05 | [fixed-upstream v1.0.0] | ✅ closed — `raft.IsNotLeader(err)` predicate; toymq match retired | `pkg/raft` (`errors.go`) |
+| FRICTION-06 | [fixed-upstream v1.0.0] | ✅ closed — `Node.NodeID()` + documented `MatchIndex` self-inclusion; `selfID` retired | `pkg/raft` (`status.go`, `node_public.go`) |
+| FRICTION-07 | [fixed-upstream v1.0.0] | ✅ closed — `Node.NotifyC()` coalescing signal; poll ticker retired | `pkg/raft` (`node_public.go`) |
+| FRICTION-08 | [fixed-upstream v1.0.0] | ✅ closed — flush-on-`Propose`; re-benched ~100× faster | `pkg/raft` (`driver.go`) |
+| DOC-02 | [fixed-upstream v1.0.0] | ✅ closed — `status.go` documents `MatchIndex`/`LastLogIndex` semantics | `pkg/raft` (`status.go`) |
+| PRAISE-01/02/03 | [confirmed-in-integration] | 📌 keep-on-record — no action | — |
