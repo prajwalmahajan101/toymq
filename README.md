@@ -2,11 +2,13 @@
 
 [![CI](https://github.com/prajwalmahajan101/toymq/actions/workflows/ci.yml/badge.svg)](https://github.com/prajwalmahajan101/toymq/actions/workflows/ci.yml)
 
-A single-node persistent message broker written in Go as a learning
-project. Stdlib only inside `pkg/client` and the helper CLIs; the
-broker binary opts into Prometheus metrics and OpenTelemetry tracing,
-and the TUI uses Bubble Tea. ~5k lines of code, 27 ADRs documenting
-every non-obvious decision. Not production software.
+A persistent message broker written in Go as a learning project. Runs
+single-node by default, or as a replicated cluster over embedded
+[toyraft](https://github.com/prajwalmahajan101/toyraft) (v3). Stdlib
+only inside `pkg/client` and the helper CLIs; the broker binary opts
+into Prometheus metrics and OpenTelemetry tracing, and the TUI uses
+Bubble Tea. ~11k lines of code, 33 ADRs documenting every non-obvious
+decision. Not production software.
 
 What it does:
 
@@ -19,12 +21,15 @@ What it does:
   on restart ([ADR 0018](./docs/adr/0018-dedupe-recovery-from-wal.md)).
 - **Bearer-token AUTH + TLS** for off-host deployment (v2.0).
 - **Crash recovery** by full WAL scan with torn-tail truncation.
+- **Replicated cluster mode** over embedded raft — leader election,
+  `NOTLEADER` write redirects, and a `WAIT` durability barrier (v3 —
+  see [ROADMAP.md](./docs/ROADMAP.md)).
 
 What it doesn't:
 
-- No replication, no multi-node, no cluster (planned for v3 —
-  see [ROADMAP.md](./docs/ROADMAP.md)).
-- No per-topic authorization (bearer-token auth is broker-wide).
+- No dynamic cluster membership — peers are fixed at startup (ADR 0030).
+- No per-topic authorization (bearer-token auth is broker-wide); the
+  raft peer transport is unauthenticated (trusted-network model).
 - No dynamic topic management (topics auto-create on first publish).
 
 ---
@@ -521,7 +526,7 @@ overview, broker internals, consumers, and traces/correlation.
 
 ## Architecture Decision Records
 
-Twenty-seven ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
+Thirty-three ADRs in [`docs/adr/`](./docs/adr/README.md) — each captures
 why a non-obvious decision was made at the time it landed in code.
 ADRs are not living docs; if a decision is overturned, a new ADR
 supersedes the old one.
@@ -555,6 +560,12 @@ supersedes the old one.
 | [0025](./docs/adr/0025-delayed-messages.md) | Delayed messages |
 | [0026](./docs/adr/0026-traceparent-wire-propagation.md) | TRACEPARENT wire propagation |
 | [0027](./docs/adr/0027-correlated-telemetry.md) | Correlated telemetry (logs ↔ traces ↔ metrics) |
+| [0028](./docs/adr/0028-raft-embedding-command-envelope.md) | Raft embedding, command envelope & the WAL↔Raft-log invariant |
+| [0029](./docs/adr/0029-toyraft-rc3-propose-result.md) | toyraft rc.3 bump: Propose returns the apply result; nonce registry removed |
+| [0030](./docs/adr/0030-cluster-mode-peer-transport.md) | Cluster mode: peer transport, membership flags & the NOTLEADER write gate |
+| [0031](./docs/adr/0031-partition-heal-linearizability-harness.md) | Partition-heal + linearizability harness (v3 M2b) |
+| [0032](./docs/adr/0032-client-routing-read-model.md) | Client routing: write redirect + leader-default read model (v3 M3) |
+| [0033](./docs/adr/0033-replication-ack-and-telemetry-model.md) | Replication acknowledgement (`WAIT`) & cluster telemetry model (v3 M4) |
 
 ---
 
