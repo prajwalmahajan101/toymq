@@ -271,7 +271,7 @@ func attachRaft(ctx context.Context, b *broker.Broker, cfg *config.Config, logge
 		}
 	}
 
-	b.AttachRaft(node, cfg.NodeID)
+	b.AttachRaft(node)
 	logger.Info("replication enabled", "node-id", cfg.NodeID, "raft-dir", raftDir,
 		"peers", cfg.Peers, "raft-addr", cfg.RaftAddr)
 	return node, nil

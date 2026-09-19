@@ -104,7 +104,7 @@ func newRoutedCluster(t *testing.T, n int) []*routeNode {
 		if err := node.Start(ctx); err != nil {
 			t.Fatalf("node.Start %s: %v", id, err)
 		}
-		b.AttachRaft(node, id)
+		b.AttachRaft(node)
 
 		srv := server.New("127.0.0.1:0", b)
 		go func() { _ = srv.Serve(ctx) }()
