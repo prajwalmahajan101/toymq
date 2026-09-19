@@ -1,23 +1,29 @@
 # toymq — Roadmap
 
-Forward-looking execution plan from the **current `v1.3.0`** state to a
-multi-node `v3.0.0`. v1.x already shipped (broker, WAL, client lib,
-TUI, observability — see [CHANGELOG.md](../CHANGELOG.md) and the
+Execution history and forward framing. **The committed line is complete:
+`v1.x → v2.0.0 → v3.0.0` all shipped** (broker, WAL, client lib, TUI,
+observability, AUTH/TLS, partitions, DLQ, and multi-node toyraft
+replication — see [CHANGELOG.md](../CHANGELOG.md) and the
 [Releases page](https://github.com/prajwalmahajan101/toymq/releases)).
-This document covers what comes **next**.
+The v2/v3 milestone sections below are kept as the **shipped record**;
+the only forward-looking content is [v4.0 — deferred](#v40--deferred-not-committed),
+which is **not committed** — "ship v3.0, stop" is the default terminal state.
 
 Branch off `main`; merge via PR; **no direct commits to `main`**.
 
 ```
-v1.x  (shipped) ──► v2.0.0  "Useful"  ──► v3.0.0  "Distributed (toyraft)"
-   broker + WAL +      AUTH/TLS, batched-       Raft replication (embed
-   client + TUI +      fsync, dedupe persist,   toyraft rc.3), quorum acks,
-   observability       partitions, DLQ          client routing, cluster TUI
+v1.x  (shipped) ──► v2.0.0  "Useful"  ──► v3.0.0  "Distributed (toyraft)"  ──► v4.0
+   broker + WAL +      AUTH/TLS, batched-       Raft replication (embed         (deferred,
+   client + TUI +      fsync, dedupe persist,   toyraft v1.0.0), quorum acks,   not
+   observability       partitions, DLQ          client routing, cluster TUI     committed)
+     ✅ shipped            ✅ shipped                  ✅ shipped
 ```
 
-## Current state — confirmation
+## Current state — `v3.0.0` shipped
 
-**You are on `v1.3.0`, not `v1.0.0`.** Tags in the repo:
+**Latest tag: `v3.0.0`** (2026-09-19). The full committed roadmap has landed;
+toyraft was bumped `rc.3 → v1.0.0` off this integration's dogfood feedback
+([migration report](./TOYRAFT-MIGRATION-REPORT.md)). Release tags:
 
 | Tag | Theme |
 |---|---|
@@ -25,9 +31,11 @@ v1.x  (shipped) ──► v2.0.0  "Useful"  ──► v3.0.0  "Distributed (toyr
 | `v1.1.0` | `cmd/toymq-tui` (Bubble Tea), ADR 0014 |
 | `v1.2.0` | State-change logging across broker / server / client |
 | `v1.3.0` | Observability stack — Prometheus metrics + OpenTelemetry tracing (ADR 0015), CI lint matrix (ADR 0016), release automation (ADR 0017) |
+| `v2.0.0` | "Useful" single-node — dedupe persistence, batched-fsync, HELLO/AUTH/TLS, partitions, backpressure, retention/DLQ/delayed, LGTM observability |
+| `v3.0.0` | "Distributed" — opt-in toyraft multi-node replication, leader election, client routing, `WAIT`/`INFO replication`, cluster TUI |
 
-`CHANGELOG.md` currently only documents `1.0.0` — backfilling 1.1–1.3
-is a separate housekeeping task tracked in `IDEA.md`.
+`CHANGELOG.md` documents `1.0.0`–`3.0.0`. What comes next — if anything — is
+the deferred [v4.0](#v40--deferred-not-committed) line only.
 
 ---
 
