@@ -122,12 +122,6 @@ type Broker struct {
 	// byte-identical to v2.
 	raft raft.Node
 
-	// selfID is this node's raft NodeID, captured at AttachRaft. Needed to
-	// exclude self from Status().MatchIndex, which — contrary to a first
-	// reading of the toyraft docs — includes the leader's own entry (v3 M4
-	// finding, TOYRAFT-MIGRATION-REPORT). Empty in standalone mode.
-	selfID string
-
 	// appliedHighWater is the highest toyraft log index whose PUB is already
 	// durably recorded in a WAL (v3 M1, ADR 0028). It is computed during
 	// recovery from the RaftIndex stamped in each replicated record and lets
@@ -141,11 +135,10 @@ type Broker struct {
 // AttachRaft switches the broker into replicated mode. After this call every
 // mutating command is proposed through node and applied via the state machine
 // on every cluster member rather than mutating broker state inline. Called once
-// at startup by cmd/toymq after raft.New — never mid-flight. selfID is this
-// node's raft NodeID, used to exclude self from replication counts.
-func (b *Broker) AttachRaft(node raft.Node, selfID string) {
+// at startup by cmd/toymq after raft.New — never mid-flight. Self is excluded
+// from replication counts via node.NodeID() (v1.0.0, FRICTION-06).
+func (b *Broker) AttachRaft(node raft.Node) {
 	b.raft = node
-	b.selfID = selfID
 }
 
 // LeaderHint returns the raft node's best-known current leader id, or "" when
@@ -185,7 +178,7 @@ func (b *Broker) ReplicationStatus() ReplicationStatus {
 		LastLogIndex: uint64(st.LastLogIndex),
 	}
 	for id, mi := range st.MatchIndex {
-		if string(id) == b.selfID {
+		if id == b.raft.NodeID() {
 			continue // MatchIndex includes the leader's own entry; exclude it
 		}
 		lag := uint64(0)
@@ -217,30 +210,24 @@ func roleString(r raft.Role) string {
 }
 
 // NotLeaderHint reports whether err is a raft rejection the client should
-// redirect around and, if so, the leader id to redirect to. It matches three
-// cases (v3 M2 + M3, ADR 0032):
-//   - *raft.ErrNotLeader — a write reached a follower; use its own LeaderHint.
-//   - raft.ErrProposalDropped — leadership was lost mid-propose.
-//   - raft.ErrStopped — the raft node is stopped/stopping (a dying leader).
-//
-// The latter two carry no hint, so the broker's current best guess is used;
-// when that too is empty the client sweeps its member set. This lets the server
-// surface NOTLEADER for any "cannot serve this write as leader" condition
-// instead of a command-specific *_FAILED, so an any-node client routes around a
-// failing leader.
+// redirect around and, if so, the leader id to redirect to. Classification
+// lives in toyraft's raft.IsNotLeader predicate (v1.0.0, FRICTION-05): it
+// covers *raft.ErrNotLeader, raft.ErrProposalDropped, and raft.ErrStopped —
+// every "cannot serve this write as leader" condition. When the typed
+// *raft.ErrNotLeader carries a LeaderHint we prefer it; otherwise the broker's
+// current best guess is used, and when that too is empty the client sweeps its
+// member set. This lets the server surface NOTLEADER instead of a
+// command-specific *_FAILED, so an any-node client routes around a failing
+// leader (v3 M2 + M3, ADR 0032).
 func (b *Broker) NotLeaderHint(err error) (string, bool) {
+	if !raft.IsNotLeader(err) {
+		return "", false
+	}
 	var nl *raft.ErrNotLeader
-	if errors.As(err, &nl) {
-		hint := string(nl.LeaderHint)
-		if hint == "" {
-			hint = b.LeaderHint()
-		}
-		return hint, true
+	if errors.As(err, &nl) && nl.LeaderHint != "" {
+		return string(nl.LeaderHint), true
 	}
-	if errors.Is(err, raft.ErrProposalDropped) || errors.Is(err, raft.ErrStopped) {
-		return b.LeaderHint(), true
-	}
-	return "", false
+	return b.LeaderHint(), true
 }
 
 // proposePublish is the replicated publish path. It resolves the clock-derived
@@ -757,18 +744,20 @@ func (b *Broker) PublishCtx(ctx context.Context, topic, dedupeKey, routingKey st
 
 // waitForReplication blocks until at least n followers (the leader excludes
 // itself) durably hold the entry at raftIndex, or timeout/ctx fires (v3 M4,
-// ADR 0033). It polls Status().MatchIndex — leader-only, per-peer, self
+// ADR 0033). It counts Status().MatchIndex — leader-only, per-peer, self
 // excluded — so counting peers with MatchIndex >= raftIndex is the true
 // follower-ack count; it never over-reports. Returns ErrWaitTimeout when the
 // bar is not met in time.
 //
-// ponytail: 5ms poll of MatchIndex. toyraft exposes no commit-notify hook;
-// switch to it if one lands (recorded in TOYRAFT-MIGRATION-REPORT).
+// It blocks on the raft node's coalescing progress signal (NotifyC, v1.0.0
+// FRICTION-07) instead of polling on a ticker. The signal is level-triggered
+// and cap-1 coalescing, so we re-read followerAckCount after each wake; the
+// pre-select check catches progress that landed before we blocked, so no
+// advance is missed.
 func (b *Broker) waitForReplication(ctx context.Context, raftIndex uint64, n int, timeout time.Duration) error {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
+	notify := b.raft.NotifyC()
 
 	for {
 		if b.followerAckCount(raftIndex) >= n {
@@ -782,7 +771,7 @@ func (b *Broker) waitForReplication(ctx context.Context, raftIndex uint64, n int
 		case <-deadline.C:
 			b.metrics.IncWait("timeout")
 			return ErrWaitTimeout
-		case <-ticker.C:
+		case <-notify:
 		}
 	}
 }
@@ -793,7 +782,7 @@ func (b *Broker) followerAckCount(raftIndex uint64) int {
 	st := b.raft.Status()
 	acked := 0
 	for id, mi := range st.MatchIndex {
-		if string(id) == b.selfID {
+		if id == b.raft.NodeID() {
 			continue // exclude the leader's own entry (v3 M4 finding)
 		}
 		if uint64(mi) >= raftIndex {
