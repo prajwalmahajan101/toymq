@@ -148,6 +148,10 @@ func TestParseValidation(t *testing.T) {
 			"-peers", "n1@http://a:1,n1@http://b:2"}, "duplicate node id"},
 		{"peers relative url", []string{"-replicate", "-raft-addr", "127.0.0.1:1",
 			"-peers", "n1@justhost"}, "must be absolute"},
+		{"raft public wildcard bind", []string{"-replicate", "-raft-addr", "0.0.0.0:7000",
+			"-peers", "n1@http://a:1"}, "raft-allow-public-bind"},
+		{"raft public ip bind", []string{"-replicate", "-raft-addr", "8.8.8.8:7000",
+			"-peers", "n1@http://a:1"}, "raft-allow-public-bind"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -157,6 +161,29 @@ func TestParseValidation(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantInErr) {
 				t.Errorf("err = %v, want substring %q", err, tc.wantInErr)
+			}
+		})
+	}
+}
+
+func TestParseRaftBindGuard(t *testing.T) {
+	// Cases the guard must permit: loopback and private binds outright, and a
+	// public/wildcard bind only when the override flag is set.
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"loopback ok", []string{"-replicate", "-raft-addr", "127.0.0.1:7000",
+			"-peers", "n1@http://127.0.0.1:7000"}},
+		{"private ok", []string{"-replicate", "-raft-addr", "10.0.0.5:7000",
+			"-peers", "n1@http://10.0.0.5:7000"}},
+		{"wildcard with override ok", []string{"-replicate", "-raft-addr", "0.0.0.0:7000",
+			"-raft-allow-public-bind", "-peers", "n1@http://a:1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Parse(tc.args, io.Discard); err != nil {
+				t.Fatalf("Parse() = %v, want nil", err)
 			}
 		})
 	}

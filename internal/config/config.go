@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -91,6 +92,13 @@ type Config struct {
 	RaftDir   string
 	Peers     string
 	RaftAddr  string
+
+	// AllowPublicRaftBind overrides the safety guard that refuses to bind the
+	// raft peer transport to a public address. The toyraft peer transport is
+	// unauthenticated and plaintext (its threat model is a trusted network), so
+	// exposing RaftAddr on a public/wildcard interface is a footgun; the guard
+	// rejects it unless this is set (v3 M6, ADR 0030).
+	AllowPublicRaftBind bool
 }
 
 // Default flag values exported so cmd binaries (toymqctl, toymq-bench,
@@ -155,6 +163,7 @@ func Parse(args []string, stderr io.Writer) (*Config, error) {
 	fs.StringVar(&cfg.RaftDir, "raft-dir", "", "raft log/state directory for -replicate; empty defaults to <data-dir>/raft")
 	fs.StringVar(&cfg.Peers, "peers", "", "cluster membership incl self for -replicate: id@baseURL,…; empty = single-node (v3 M2)")
 	fs.StringVar(&cfg.RaftAddr, "raft-addr", "", "this node's raft transport listen address host:port; required with -peers")
+	fs.BoolVar(&cfg.AllowPublicRaftBind, "raft-allow-public-bind", false, "allow binding the unauthenticated raft transport to a public/wildcard address (default: refuse; trusted-network only)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -238,8 +247,33 @@ func (c *Config) validate() error {
 		if c.RaftAddr == "" {
 			return errors.New("raft-addr must be set with -peers")
 		}
+		if !c.AllowPublicRaftBind && isPublicBind(c.RaftAddr) {
+			return fmt.Errorf("raft-addr %q binds the unauthenticated raft transport to a public/wildcard address; "+
+				"the toyraft peer transport is plaintext and trusted-network only — bind a loopback/private address "+
+				"or pass -raft-allow-public-bind to override", c.RaftAddr)
+		}
 	}
 	return nil
+}
+
+// isPublicBind reports whether addr (host:port) exposes the raft transport
+// beyond a trusted network: an empty host or a wildcard (0.0.0.0 / ::), or a
+// literal IP that is neither loopback nor private. A non-IP hostname is treated
+// as safe — it cannot be classified without DNS, and the operator chose it
+// deliberately.
+func isPublicBind(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false // unparseable here; the transport surfaces the real error
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return true // wildcard bind accepts connections on every interface
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false // a hostname, not an IP — not our call to reject
+	}
+	return !ip.IsLoopback() && !ip.IsPrivate()
 }
 
 // ParsePeers parses the --peers flag ("id@baseURL,id@baseURL,…") into a
