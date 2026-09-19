@@ -1,0 +1,85 @@
+# Local 3-node replicated ToyMQ cluster (v3). One image, role decided by flags:
+# every node runs `toymq --replicate` with the same --peers membership; raft
+# elects a leader among them. Writes go to the leader (clients use a
+# redirect-following ClusterClient); followers serve reads.
+#
+# Run:
+#   docker compose -f docker-compose.cluster.yml up -d --build
+#   toymqctl -cluster localhost:6789,localhost:6889,localhost:6989 pub orders hello
+#   toymqctl -cluster localhost:6789,localhost:6889,localhost:6989 info replication
+#   docker compose -f docker-compose.cluster.yml down -v   # -v wipes the data volumes
+#
+# Client ports (host -> container 6789):  n1 6789 · n2 6889 · n3 6989
+# Raft peer transport is internal to the compose network on :7000.
+#
+# The image ENTRYPOINT fixes `--addr :6789 --data-dir /data`; the per-node
+# `command` below only appends the raft flags. --raft-allow-public-bind is
+# required because the raft transport binds the wildcard 0.0.0.0 so peers on the
+# private compose network can reach it — the guard refuses a public/wildcard
+# bind by default (the transport is unauthenticated/plaintext, trusted-network
+# only; see ADR 0030).
+
+x-peers: &peers "--peers=n1@http://n1:7000,n2@http://n2:7000,n3@http://n3:7000"
+
+services:
+  n1:
+    build: .
+    image: toymq:dev
+    container_name: toymq-n1
+    ports:
+      - "6789:6789"
+    command:
+      - "--replicate"
+      - "--node-id=n1"
+      - "--raft-addr=0.0.0.0:7000"
+      - "--raft-allow-public-bind"
+      - *peers
+    volumes:
+      - n1-data:/data
+    networks:
+      - toymq-cluster
+    restart: unless-stopped
+
+  n2:
+    build: .
+    image: toymq:dev
+    container_name: toymq-n2
+    ports:
+      - "6889:6789"
+    command:
+      - "--replicate"
+      - "--node-id=n2"
+      - "--raft-addr=0.0.0.0:7000"
+      - "--raft-allow-public-bind"
+      - *peers
+    volumes:
+      - n2-data:/data
+    networks:
+      - toymq-cluster
+    restart: unless-stopped
+
+  n3:
+    build: .
+    image: toymq:dev
+    container_name: toymq-n3
+    ports:
+      - "6989:6789"
+    command:
+      - "--replicate"
+      - "--node-id=n3"
+      - "--raft-addr=0.0.0.0:7000"
+      - "--raft-allow-public-bind"
+      - *peers
+    volumes:
+      - n3-data:/data
+    networks:
+      - toymq-cluster
+    restart: unless-stopped
+
+volumes:
+  n1-data:
+  n2-data:
+  n3-data:
+
+networks:
+  toymq-cluster:

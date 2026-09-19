@@ -1,0 +1,14 @@
+# Release image built by GoReleaser (dockers: block in .goreleaser.yaml).
+# Unlike ./Dockerfile (which builds from source), this COPYs the binary
+# GoReleaser already cross-compiled into the build context. One image runs
+# either cluster role — leader or follower is decided by flags at runtime
+# (--replicate --peers …), so no separate leader/follower images are needed.
+FROM scratch
+COPY toymq /toymq
+
+VOLUME ["/data"]
+
+# 6789 = client wire protocol; 7000 = raft peer transport (cluster mode).
+EXPOSE 6789 7000
+
+ENTRYPOINT ["/toymq", "--addr", ":6789", "--data-dir", "/data"]
